@@ -40,7 +40,7 @@ public:
     struct remind_st
     {
         int32_t id;
-        snowflake owner_id;
+        aegis::snowflake owner_id;
         std::chrono::system_clock::time_point expiry_time;
         std::chrono::system_clock::time_point creation;
         std::string message;

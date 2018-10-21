@@ -9,6 +9,15 @@
 
 #include "mod_automod.h"
 #include "AegisBot.h"
+#include <aegis/gateway/objects/message.hpp>
+#include <aegis/channel.hpp>
+#include <aegis/guild.hpp>
+#if defined(AEGIS_HEADER_ONLY)
+#include <aegis/impl/member.cpp>
+#include <aegis/impl/channel.cpp>
+#include <aegis/impl/guild.cpp>
+#endif
+#include <aegis/member.hpp>
 
 std::string mod_automod::r_prefix = "automod";
 
@@ -76,7 +85,7 @@ void mod_automod::load(AegisBot & bot)
     }
     catch (std::exception & e)
     {
-        bot.bot.log->error("Exception loading automod module data for guild [{}] e[{}]", g_data.guild_id, e.what());
+        bot.log->error("Exception loading automod module data for guild [{}] e[{}]", g_data.guild_id, e.what());
     }
 }
 
@@ -134,17 +143,17 @@ bool mod_automod::process(shared_data & sd)
 
 bool mod_automod::automod(shared_data & sd)
 {
-    const snowflake & channel_id = sd.channel_id;
-    const snowflake & guild_id = sd.guild_id;
-    const snowflake & message_id = sd.message_id;
-    const snowflake & member_id = sd.member_id;
-    const snowflake & guild_owner_id = sd.guild_owner_id;
+    const aegis::snowflake & channel_id = sd.channel_id;
+    const aegis::snowflake & guild_id = sd.guild_id;
+    const aegis::snowflake & message_id = sd.message_id;
+    const aegis::snowflake & member_id = sd.member_id;
+    const aegis::snowflake & guild_owner_id = sd.guild_owner_id;
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    aegis::member & _member = sd._member;
+    aegis::channel & _channel = sd._channel;
+    aegis::guild & _guild = sd._guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -253,7 +262,7 @@ bool mod_automod::automod(shared_data & sd)
                 std::string subcmd = to_lower(toks[3]);
                 if (subcmd == "add")
                 {
-                    snowflake role = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake role = sd.ab.get_snowflake(toks[4], sd._guild);
                     if (!role)
                     {
                         //can't find based on snowflake -- try a basic name check
@@ -280,7 +289,7 @@ bool mod_automod::automod(shared_data & sd)
                 }
                 else if (subcmd == "rem")
                 {
-                    snowflake role = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake role = sd.ab.get_snowflake(toks[4], sd._guild);
                     if (!role)
                     {
                         //can't find based on snowflake -- try a basic name check
@@ -321,7 +330,7 @@ bool mod_automod::automod(shared_data & sd)
                 std::string subcmd = to_lower(toks[3]);
                 if (subcmd == "add")
                 {
-                    snowflake user = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake user = sd.ab.get_snowflake(toks[4], sd._guild);
                     if (!user)
                     {
                         sd._channel.create_message("Invalid user.");
@@ -335,7 +344,7 @@ bool mod_automod::automod(shared_data & sd)
                 }
                 else if (subcmd == "rem")
                 {
-                    snowflake user = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake user = sd.ab.get_snowflake(toks[4], sd._guild);
                     if (!user)
                     {
                         sd._channel.create_message("Invalid user.");

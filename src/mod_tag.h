@@ -47,7 +47,7 @@ public:
 
         tag_type type;
         int32_t id;
-        snowflake owner_id;
+        aegis::snowflake owner_id;
         std::string owner_name;
         uint64_t creation;
         uint32_t usage_count;
@@ -76,8 +76,8 @@ public:
     };
 
     std::unordered_map<std::string, std::unique_ptr<base_tag_st>> taglist;
-    std::unordered_map<snowflake, tag_perm_st> permlist;
-    std::vector<snowflake> blocklist;
+    std::unordered_map<aegis::snowflake, tag_perm_st> permlist;
+    std::vector<aegis::snowflake> blocklist;
 
 
 

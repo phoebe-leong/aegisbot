@@ -9,15 +9,19 @@
 
 #pragma once
 
+//#include <aegis/fwd.hpp>
+#include <aegis/snowflake.hpp>
+//#include <asio/io_context.hpp>
 #include <string>
 #include <cctype>
 #include <vector>
-#include <aegis/snowflake.hpp>
-#include <asio/io_service.hpp>
-#include <aegis/fwd.hpp>
+#include <unordered_map>
+#include <functional>
 
-using aegis::snowflake;
-
+namespace asio
+{
+class io_context;
+}
 class Guild;
 class AegisBot;
 struct shared_data;

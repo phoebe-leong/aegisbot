@@ -94,17 +94,17 @@ void mod_perms::load(AegisBot & bot)
 
 bool mod_perms::perms(shared_data & sd)
 {
-    const snowflake & channel_id = sd.channel_id;
-    const snowflake & guild_id = sd.guild_id;
-    const snowflake & message_id = sd.message_id;
-    const snowflake & member_id = sd.member_id;
-    const snowflake & guild_owner_id = sd.guild_owner_id;
+    const aegis::snowflake & channel_id = sd.channel_id;
+    const aegis::snowflake & guild_id = sd.guild_id;
+    const aegis::snowflake & message_id = sd.message_id;
+    const aegis::snowflake & member_id = sd.member_id;
+    const aegis::snowflake & guild_owner_id = sd.guild_owner_id;
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    aegis::member & _member = sd._member;
+    aegis::channel & _channel = sd._channel;
+    aegis::guild & _guild = sd._guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;

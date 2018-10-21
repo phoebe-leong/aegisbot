@@ -38,8 +38,8 @@ public:
     {
         int32_t id;
         std::string owner;
-        snowflake owner_id;
-        std::vector<snowflake> bidders;
+        aegis::snowflake owner_id;
+        std::vector<aegis::snowflake> bidders;
         std::string teamname;
         std::vector<std::pair<std::string, int>> players;
         int64_t funds = 0;
@@ -63,19 +63,19 @@ public:
     bool auctioninprogress = false;
     std::string currentnom;
     std::vector<std::pair<uint32_t, int>> bids;//team id, bid amount
-    snowflake managerrole;
-    snowflake hostrole;
+    aegis::snowflake managerrole;
+    aegis::snowflake hostrole;
     int64_t currentstandingsid = 0;
     bool paused = false;
     int64_t timeuntilstop = 0;
 
-    std::set<snowflake> admins;
+    std::set<aegis::snowflake> admins;
     asio::steady_timer timer;
     int64_t pausetimeleft = 0;
 
     int64_t bidtime = 30000;
 
-    const Team & getteam(const snowflake id) const;
+    const Team & getteam(const aegis::snowflake id) const;
 
     void timercontinuation(const asio::error_code & ec, aegis::channel & _channel);
 

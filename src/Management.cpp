@@ -9,11 +9,17 @@
 
 
 #include "AegisBot.h"
-#include <aegis/objects/embed.hpp>
+#include <aegis/gateway/objects/embed.hpp>
 #include "Guild.h"
+#include <aegis.hpp>
 #if !defined(AEGIS_MSVC)
 #include <dlfcn.h>
 #endif
+
+using aegis::snowflake;
+using aegis::member;
+using aegis::channel;
+using aegis::guild;
 
 bool AegisBot::process_admin_messages(aegis::gateway::events::message_create & obj, shared_data & sd)
 {
@@ -573,7 +579,7 @@ std::cout << "Testing\n";
             shard_guild_c[v.second->shard_id].members += v.second->get_members().size();
         }
 
-        w << fmt::format("  Total transfer: {} Memory usage: {}\n", format_bytes(count), format_bytes(aegis::utility::getCurrentRSS()));
+        w << fmt::format("  Total transfer: {} Memory usage: {}\n", aegis::utility::format_bytes(count), aegis::utility::format_bytes(aegis::utility::getCurrentRSS()));
         w << fmt::format("  shard#   sequence servers members            uptime last message transferred reconnects\n");
         w << fmt::format("  ------ ---------- ------- ------- ----------------- ------------ ----------- ----------\n");
 
@@ -623,7 +629,7 @@ std::cout << "Testing\n";
             shard_guild_c[v.second->shard_id].members += v.second->get_members().size();
         }
 
-        w << fmt::format("  Total transfer: {} Memory usage: {}\n", format_bytes(count), format_bytes(aegis::utility::getCurrentRSS()));
+        w << fmt::format("  Total transfer: {} Memory usage: {}\n", aegis::utility::format_bytes(count), aegis::utility::format_bytes(aegis::utility::getCurrentRSS()));
         w << fmt::format("  shard#   sequence servers members            uptime last message transferred reconnects\n");
         w << fmt::format("  ------ ---------- ------- ------- ----------------- ------------ ----------- ----------\n");
 
@@ -1389,7 +1395,8 @@ std::cout << "Testing\n";
             obj["max_uses"] = 0;
             obj["temporary"] = false;
             obj["unique"] = true;
-
+            aegis::rest::request_params && rp = aegis::rest::request_params{ fmt::format("/channels/{}/invites", std::stoull(r["id"].get<std::string>())), aegis::rest::Post, obj.dump() };
+            auto r_create = bot.call(std::move(rp));
             if (auto r_create = bot.call({ fmt::format("/channels/{}/invites", std::stoull(r["id"].get<std::string>())), aegis::rest::Post, obj.dump() }); r_create)
             {
                 json i_create = json::parse(reply.content);
@@ -1595,5 +1602,308 @@ std::cout << "Testing\n";
             do_log("Test log void 7");
         });
     }
+#if !defined(AEGIS_MSVC)
+    if (toks[0] == "bash_r")
+    {
+        /*
+curl \
+-H "Authorization: Bot $token" \
+https://discordapp.com/api/users/1
+{"code": 10013, "message": "Unknown User"}
+         **/
+
+        try
+        {
+            std::string torun{ content.data() + toks[0].size() + 1 };
+            std::string result = exec(string_replace(admin_string_replace(torun, sd), sd));
+
+
+
+            _channel.create_message(fmt::format("Result: ```\n{}\n```", result));
+        }
+        catch (std::exception & e)
+        {
+            //bot.log->error("Exception: {}", e.what());
+            _channel.create_message("Exception");
+            bot.log->error("Exception: {}", e.what());
+            return true;
+        }
+        return true;
+    }
+#endif
+    if (toks[0] == "test_replacements")
+    {
+        if (toks.size() <= 1)
+            return true;
+
+        bot.log->info("Replacements: {}", string_replace(admin_string_replace(toks[1].data(), sd), sd));
+        return true;
+    }
+
+    if (toks[0] == "gperms2")
+    {
+        if (check_params(toks, 2))
+            return true;
+
+        auto _guild = obj.bot->find_guild(std::stoll(std::string(toks[1])));
+
+        if (_guild == nullptr)
+        {
+            _channel.create_message("Not in that guild");
+            return true;
+        }
+
+        aegis::permission perm = _guild->base_permissions(*_guild->self());
+
+        json msg =
+        {
+            { "title", "AegisBot" },
+            { "description", fmt::format("Perms for [{}] : [{}]", _guild->get_name(), _guild->guild_id) },
+            { "color", rand() % 0xFFFFFF },//10599460 },
+            { "fields",
+            json::array(
+                {
+                    { { "name", "canInvite" },{ "value", fmt::format("{}", perm.can_invite()) },{ "inline", true } },
+                    { { "name", "canKick" },{ "value", fmt::format("{}", perm.can_kick()) },{ "inline", true } },
+                    { { "name", "canBan" },{ "value", fmt::format("{}", perm.can_ban()) },{ "inline", true } },
+                    { { "name", "isAdmin" },{ "value", fmt::format("{}", perm.is_admin()) },{ "inline", true } },
+                    { { "name", "canManageChannels" },{ "value", fmt::format("{}", perm.can_manage_channels()) },{ "inline", true } },
+                    { { "name", "canManageGuild" },{ "value", fmt::format("{}", perm.can_manage_guild()) },{ "inline", true } },
+                    { { "name", "canAddReactions" },{ "value", fmt::format("{}", perm.can_add_reactions()) },{ "inline", true } },
+                    { { "name", "canViewAuditLogs" },{ "value", fmt::format("{}", perm.can_view_audit_logs()) },{ "inline", true } },
+                    { { "name", "canReadMessages" },{ "value", fmt::format("{}", perm.can_read_messages()) },{ "inline", true } },
+                    { { "name", "canSendMessages" },{ "value", fmt::format("{}", perm.can_send_messages()) },{ "inline", true } },
+                    { { "name", "canTTS" },{ "value", fmt::format("{}", perm.can_tts()) },{ "inline", true } },
+                    { { "name", "canManageMessages" },{ "value", fmt::format("{}", perm.can_manage_messages()) },{ "inline", true } },
+                    { { "name", "canEmbed" },{ "value", fmt::format("{}", perm.can_embed()) },{ "inline", true } },
+                    { { "name", "canAttachFiles" },{ "value", fmt::format("{}", perm.can_attach_files()) },{ "inline", true } },
+                    { { "name", "canReadHistory" },{ "value", fmt::format("{}", perm.can_read_history()) },{ "inline", true } },
+                    { { "name", "canMentionEveryone" },{ "value", fmt::format("{}", perm.can_mention_everyone()) },{ "inline", true } },
+                    { { "name", "canExternalEmoiji" },{ "value", fmt::format("{}", perm.can_external_emoiji()) },{ "inline", true } },
+                    { { "name", "canChangeName" },{ "value", fmt::format("{}", perm.can_change_name()) },{ "inline", true } },
+                    { { "name", "canManageNames" },{ "value", fmt::format("{}", perm.can_manage_names()) },{ "inline", true } },
+                    { { "name", "canManageRoles" },{ "value", fmt::format("{}", perm.can_manage_roles()) },{ "inline", true } },
+                    { { "name", "canManageWebhooks" },{ "value", fmt::format("{}", perm.can_manage_webhooks()) },{ "inline", true } },
+                    { { "name", "canManageEmojis" },{ "value", fmt::format("{}", perm.can_manage_emojis()) },{ "inline", true } },
+                    { { "name", "canMentionEveryone" },{ "value", fmt::format("{}", perm.can_mention_everyone()) },{ "inline", true } },
+                    { { "name", "canVoiceConnect" },{ "value", fmt::format("{}", perm.can_voice_connect()) },{ "inline", true } },
+                    { { "name", "canVoiceMute" },{ "value", fmt::format("{}", perm.can_voice_mute()) },{ "inline", true } },
+                    { { "name", "canVoiceSpeak" },{ "value", fmt::format("{}", perm.can_voice_speak()) },{ "inline", true } },
+                    { { "name", "canVoiceDeafen" },{ "value", fmt::format("{}", perm.can_voice_deafen()) },{ "inline", true } },
+                    { { "name", "canVoiceMove" },{ "value", fmt::format("{}", perm.can_voice_move()) },{ "inline", true } },
+                    { { "name", "canVoiceActivity" },{ "value", fmt::format("{}", perm.can_voice_activity()) },{ "inline", true } }
+                })
+            }
+        };
+        _channel.create_message_embed({}, msg);
+        return true;
+    }
+
+    if (toks[0] == "gperms")
+    {
+        if (check_params(toks, 2))
+            return true;
+
+        auto _guild = obj.bot->find_guild(std::stoll(std::string(toks[1])));
+
+        if (_guild == nullptr)
+        {
+            _channel.create_message("Not in that guild");
+            return true;
+        }
+
+        aegis::permission perm = _guild->base_permissions(*_guild->self());
+
+        fmt::MemoryWriter w;
+
+        w << fmt::format("Perms for [{}] : [{}]\n", _guild->get_name(), _guild->guild_id);
+        if (perm.is_admin())
+            w << "```\nisAdmin: true\n```";
+        else
+        {
+            w << "```\n";
+            w << fmt::format("canInvite: {}\n", perm.can_invite());
+            w << fmt::format("canKick: {}\n", perm.can_kick());
+            w << fmt::format("canBan: {}\n", perm.can_ban());
+            w << fmt::format("isAdmin: {}\n", perm.is_admin());
+            w << fmt::format("canManageChannels: {}\n", perm.can_manage_channels());
+            w << fmt::format("canManageGuild: {}\n", perm.can_manage_guild());
+            w << fmt::format("canAddReactions: {}\n", perm.can_add_reactions());
+            w << fmt::format("canViewAuditLogs: {}\n", perm.can_view_audit_logs());
+            w << fmt::format("canReadMessages: {}\n", perm.can_read_messages());
+            w << fmt::format("canSendMessages: {}\n", perm.can_send_messages());
+            w << fmt::format("canTTS: {}\n", perm.can_tts());
+            w << fmt::format("canManageMessages: {}\n", perm.can_manage_messages());
+            w << fmt::format("canEmbed: {}\n", perm.can_embed());
+            w << fmt::format("canAttachFiles: {}\n", perm.can_attach_files());
+            w << fmt::format("canReadHistory: {}\n", perm.can_read_history());
+            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
+            w << fmt::format("canExternalEmoiji: {}\n", perm.can_external_emoiji());
+            w << fmt::format("canChangeName: {}\n", perm.can_change_name());
+            w << fmt::format("canManageNames: {}\n", perm.can_manage_names());
+            w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
+            w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
+            w << fmt::format("canManageEmojis: {}\n", perm.can_manage_emojis());
+            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
+            w << fmt::format("canVoiceConnect: {}\n", perm.can_voice_connect());
+            w << fmt::format("canVoiceMute: {}\n", perm.can_voice_mute());
+            w << fmt::format("canVoiceSpeak: {}\n", perm.can_voice_speak());
+            w << fmt::format("canVoiceDeafen: {}\n", perm.can_voice_deafen());
+            w << fmt::format("canVoiceMove: {}\n", perm.can_voice_move());
+            w << fmt::format("canVoiceActivity: {}\n", perm.can_voice_activity());
+            w << "```";
+        }
+
+        _channel.create_message(w.str());
+        return true;
+    }
+
+    if (toks[0] == "cperms")
+    {
+        if (check_params(toks, 2))
+            return true;
+
+        auto _ch = obj.bot->find_channel(std::stoll(std::string(toks[1])));
+
+        if (_ch == nullptr)
+        {
+            _channel.create_message("Not in that channel");
+            return true;
+        }
+
+        aegis::permission perm = _ch->perms();
+
+        fmt::MemoryWriter w;
+
+        w << fmt::format("Perms for [{}] : [{}]\n", _ch->get_guild().get_name(), _ch->get_guild().guild_id);
+        if (perm.is_admin())
+            w << "```\nisAdmin: true\n```";
+        else
+        {
+            w << "```\n";
+            w << fmt::format("canInvite: {}\n", perm.can_invite());
+            w << fmt::format("canKick: {}\n", perm.can_kick());
+            w << fmt::format("canBan: {}\n", perm.can_ban());
+            w << fmt::format("isAdmin: {}\n", perm.is_admin());
+            w << fmt::format("canManageChannels: {}\n", perm.can_manage_channels());
+            w << fmt::format("canManageGuild: {}\n", perm.can_manage_guild());
+            w << fmt::format("canAddReactions: {}\n", perm.can_add_reactions());
+            w << fmt::format("canViewAuditLogs: {}\n", perm.can_view_audit_logs());
+            w << fmt::format("canReadMessages: {}\n", perm.can_read_messages());
+            w << fmt::format("canSendMessages: {}\n", perm.can_send_messages());
+            w << fmt::format("canTTS: {}\n", perm.can_tts());
+            w << fmt::format("canManageMessages: {}\n", perm.can_manage_messages());
+            w << fmt::format("canEmbed: {}\n", perm.can_embed());
+            w << fmt::format("canAttachFiles: {}\n", perm.can_attach_files());
+            w << fmt::format("canReadHistory: {}\n", perm.can_read_history());
+            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
+            w << fmt::format("canExternalEmoiji: {}\n", perm.can_external_emoiji());
+            w << fmt::format("canChangeName: {}\n", perm.can_change_name());
+            w << fmt::format("canManageNames: {}\n", perm.can_manage_names());
+            w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
+            w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
+            w << fmt::format("canManageEmojis: {}\n", perm.can_manage_emojis());
+            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
+            w << fmt::format("canVoiceConnect: {}\n", perm.can_voice_connect());
+            w << fmt::format("canVoiceMute: {}\n", perm.can_voice_mute());
+            w << fmt::format("canVoiceSpeak: {}\n", perm.can_voice_speak());
+            w << fmt::format("canVoiceDeafen: {}\n", perm.can_voice_deafen());
+            w << fmt::format("canVoiceMove: {}\n", perm.can_voice_move());
+            w << fmt::format("canVoiceActivity: {}\n", perm.can_voice_activity());
+            w << "```";
+        }
+
+        _channel.create_message(w.str());
+        return true;
+    }
+
+    if (toks[0] == "bowsette")
+    {
+        if (!_channel.nsfw())
+        {
+            _channel.create_message("Channel must be set to NSFW for this command.");
+            return true;
+        }
+        aegis::rest::request_params rp;
+        rp.host = "lewd.bowsette.pictures";
+        rp.path = "/api/request";
+        rp.port = "443";
+
+        auto rep = bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+
+        json j = json::parse(rep.content);
+
+        _channel.create_message(j["url"].get<std::string>());
+        return true;
+    }
+
+    if (toks[0] == "ignore_channel")
+    {
+        auto it = std::find(g_data.ignored_channels.begin(), g_data.ignored_channels.end(), channel_id);
+        if (it == g_data.ignored_channels.end())
+        {
+            g_data.ignored_channels.push_back(channel_id);
+            create_message(_channel, "Channel ignore set to: true", true);
+            sadd("ignored_channels", { std::to_string(channel_id) }, g_data);
+            return true;
+        }
+
+        g_data.ignored_channels.erase(it);
+        create_message(_channel, "Channel ignore set to: false", true);
+        srem("ignored_channels", { std::to_string(channel_id) }, g_data);
+        return true;
+    }
+
+    if (toks[0] == "channel_status")
+    {
+        bool res = false;
+        auto it = std::find(g_data.ignored_channels.begin(), g_data.ignored_channels.end(), channel_id);
+        if (it != g_data.ignored_channels.end())
+            res = true;
+
+        create_message(_channel, fmt::format("Channel ignore currently set to: {}", res), true);
+        return true;
+    }
+
+    if (toks[0] == "or_say")
+    {
+        if (toks.size() > 1)
+        {
+            create_message(_channel, string_replace(admin_string_replace(toks[1].data(), sd), sd), true);
+        }
+        return true;
+    }
+
+    if (toks[0] == "echo")
+    {
+        if (toks.size() > 1)
+        {
+            create_message(_channel, toks[1].data());
+        }
+        return true;
+    }
+
+    if (toks[0] == "analyze")
+    {
+        if (toks.size() == 1)
+            return true;
+
+        auto [type, id] = analyze_mention(toks[1]);
+        std::string strtype;
+        switch (type)
+        {
+            case Nickname: strtype = "Nickname"; break;
+            case Channel: strtype = "Channel"; break;
+            case User: strtype = "User"; break;
+            case Role: strtype = "Role"; break;
+            case Emoji: strtype = "Emoji"; break;
+            case AnimatedEmoji: strtype = "AnimatedEmoji"; break;
+            case Fail: strtype = "Fail"; break;
+        }
+
+        create_message(_channel, fmt::format("Analysis: type({}) value({})", strtype, id));
+        return true;
+    }
+
     return false;
 }

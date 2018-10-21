@@ -35,6 +35,9 @@ AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
     , maint_timer(_io)
     , strand(_io)
 {
+    log = spdlog::get("aegis");
+    load_config();
+
     stats_timer.expires_after(std::chrono::seconds(60));
     stats_timer.async_wait(std::bind(&AegisBot::push_stats, this));
 
@@ -49,6 +52,95 @@ AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
 
     web_log_timer.expires_after(std::chrono::seconds(5));
     web_log_timer.async_wait(std::bind(&AegisBot::web_log, this));
+
+    admin_replacements.emplace("$token", [&](shared_data & sd)
+    {
+        return sd.ab.bot.get_token();
+    });
+
+    admin_replacements.emplace("$shardid", [&](shared_data & sd)
+    {
+        return std::to_string(sd.msg._shard->get_id());
+    });
+
+    admin_replacements.emplace("$shardseq", [&](shared_data & sd)
+    {
+        return std::to_string(sd.msg._shard->get_sequence());
+    });
+
+    admin_replacements.emplace("$shardtransfer", [&](shared_data & sd)
+    {
+        return sd.msg._shard->get_transfer_str();
+    });
+
+    admin_replacements.emplace("$sharduptime", [&](shared_data & sd)
+    {
+        return sd.msg._shard->uptime_str();
+    });
+
+    admin_replacements.emplace("$uptime", [&](shared_data & sd)
+    {
+        return sd.ab.bot.uptime_str();
+    });
+
+    replacements.emplace("$username", [&](shared_data & sd)
+    {
+        return std::string{ sd.username };
+    });
+
+    replacements.emplace("$userid", [&](shared_data & sd)
+    {
+        return std::to_string(sd.member_id);
+    });
+
+    replacements.emplace("$messageid", [&](shared_data & sd)
+    {
+        return std::to_string(sd.message_id);
+    });
+
+    replacements.emplace("$channelname", [&](shared_data & sd)
+    {
+        return sd._channel.get_name();
+    });
+
+    replacements.emplace("$guildid", [&](shared_data & sd)
+    {
+        return std::to_string(sd.guild_id);
+    });
+
+    replacements.emplace("$guildname", [&](shared_data & sd)
+    {
+        return sd._guild.get_name();
+    });
+
+//     bot.set_on_shard_connect([&](aegis::shards::shard * _shard)
+//     {
+//         json j;
+//         j["shard:connects"] = 1;
+//         event_log(j, "/shards");
+//     });
+
+    bot.set_on_shard_disconnect([&](aegis::shards::shard * _shard)
+    {
+        json j;
+        j["shard:disconnects"] = 1;
+        event_log(j, "/shards");
+    });
+
+//     advanced_replacements.emplace("@user", [&](shared_data & sd)
+//     {
+//         return std::string{ sd._guild. };
+//     });
+// 
+//     replacements.emplace("$userid", [&](shared_data & sd)
+//     {
+//         return std::string{ sd._channel.get_id() };
+//     });
+// 
+//     replacements.emplace("$userid", [&](shared_data & sd)
+//     {
+//         return std::string{ sd._channel.get_id() };
+//     });
 
 //     memory_stats.expires_after(std::chrono::milliseconds(100));
 //     memory_stats.async_wait(std::bind(&AegisBot::send_memory_stats, this));
@@ -137,6 +229,7 @@ void AegisBot::web_log()
 
 void AegisBot::update_statuses()
 {
+    status_timer.expires_at(std::chrono::steady_clock::now() + std::chrono::seconds(30));
     try
     {
         std::string toset;
@@ -188,14 +281,102 @@ void AegisBot::update_statuses()
     catch (...)
     {
     }
-    status_timer.expires_after(std::chrono::seconds(30));
     status_timer.async_wait(std::bind(&AegisBot::update_statuses, this));
 }
 
 void AegisBot::push_stats()
 {
+    stats_timer.expires_at(std::chrono::steady_clock::now() + std::chrono::seconds(10));
     try
     {
+        aegis::rest::request_params rp;
+        rp.host = "165.227.115.46";
+        rp.port = "9998";
+        if (is_production)
+            rp.path = "/bot";
+        else
+            rp.path = "/test/bot";
+
+        json m;
+
+//         json j;
+//         for (const auto & s : bot.get_shard_mgr().get_shards())
+//         {
+//             json js;
+//             js["id"] = s->get_id();
+//             js["seq"] = s->get_sequence();
+//             j.push_back(js);
+//         }
+// 
+//         rp.body = "";
+//         bot.call();
+
+
+        {
+            for (auto & c : command_counters)
+            {
+                json j;
+                j[fmt::format("cmd:{}", c.first)] = c.second;
+                m.push_back(j);
+
+                c.second = 0;
+            }
+
+            for (auto & c : http_codes)
+            {
+                json j;
+                j[fmt::format("code:{}", c.first)] = c.second;
+                m.push_back(j);
+
+                c.second = 0;
+            }
+        }
+
+        {
+            json j;
+            j["members"] = bot.members.size();
+            j["guilds"] = bot.guilds.size();
+            j["memory"] = aegis::utility::getCurrentRSS();
+            j["dms"] = counters.dms.fetch_and(0);
+            j["msgs"] = counters.messages.fetch_and(0);
+            j["presences"] = counters.presences.fetch_and(0);
+            j["rest_time"] = counters.rest_time.fetch_and(0);
+            j["rest"] = counters._rest.fetch_and(0);
+            j["events"] = counters.events.fetch_and(0);
+
+            m.push_back(j);
+        }
+
+        rp.body = m.dump();
+        bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+
+        {
+            aegis::rest::request_params rp;
+            rp.host = "165.227.115.46";
+            rp.port = "9998";
+            if (is_production)
+                rp.path = "/cmds";
+            else
+                rp.path = "/test/cmds";
+
+            json ev;
+            for (auto &[k, v] : counters._msg)
+            {
+                ev[k + ".count"] = v.count;
+                ev[k + ".time"] = v.time;
+                v.count = v.time = 0;
+            }
+            for (auto &[k, v] : counters._js)
+            {
+                ev[k + ".js.count"] = v.count;
+                ev[k + ".js.time"] = v.time;
+                v.count = v.time = 0;
+            }
+            rp.body = ev.dump();
+            bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+        }
+
+
         statsd.Metric<Gauge>("member", bot.members.size(), 1);
         statsd.Metric<Gauge>("guilds", bot.guilds.size(), 1);
 
@@ -215,7 +396,6 @@ void AegisBot::push_stats()
     catch (...)
     {
     }
-    stats_timer.expires_after(std::chrono::seconds(10));
     stats_timer.async_wait(std::bind(&AegisBot::push_stats, this));
 }
 
@@ -290,6 +470,61 @@ void AegisBot::send_memory_stats()
 //     memory_stats.async_wait(std::bind(&AegisBot::send_memory_stats, this));
 }
 
+void AegisBot::load_config()
+{
+    auto configfile = std::fopen("config.json", "r+");
+
+    if (!configfile)
+    {
+        std::perror("File opening failed");
+        throw std::runtime_error("config.json does not exist");
+    }
+
+    std::fseek(configfile, 0, SEEK_END);
+    std::size_t filesize = std::ftell(configfile);
+
+    std::fseek(configfile, 0, SEEK_SET);
+    std::vector<char> buffer(filesize + 1);
+    std::memset(buffer.data(), 0, filesize + 1);
+    size_t rd = std::fread(buffer.data(), sizeof(char), buffer.size() - 1, configfile);
+
+    std::fclose(configfile);
+
+    json cfg = json::parse(buffer.data());
+
+    if (!cfg["bot"].is_null())
+    {
+        //load bot specific configurations
+        auto cfg_bot = cfg["bot"];
+        if (!cfg_bot["production"].is_null())
+            is_production = cfg_bot["production"];
+        
+    }
+}
+
+void AegisBot::do_log(std::string msg)
+{
+    bot.log->debug(msg);
+    asio::post(_io_service, asio::bind_executor(strand, [msg, this]()
+    {
+        std::lock_guard<std::mutex> lock(r_mutex);
+        redis.command("PUBLISH", { "aegis:log", msg });
+    }));
+}
+
+bool AegisBot::create_message(aegis::channel & _channel, const std::string & str, bool _override) noexcept
+{
+    auto guild_id = _channel.get_guild_id();
+    if (!guild_id) return false;
+    auto & g_info = get_guild(guild_id);
+    if (!_override && g_info.is_channel_ignored(_channel.get_id()))
+        return false;
+    std::error_code ec;
+    _channel.create_message(ec, str);
+    if (ec)
+        return false;
+    return true;
+}
 
 void AegisBot::init()
 {
@@ -349,13 +584,16 @@ void AegisBot::init()
         bot.log->info("Module [{}] loaded with prefix [{}] id [{}] and default enabled [{}]", name, prefix, id, enabled);
     }
 
-    bot.message_end = std::bind(&AegisBot::message_end, this, std::placeholders::_1, std::placeholders::_2);
-    bot.call_end = std::bind(&AegisBot::call_end, this, std::placeholders::_1);
-    bot.js_end = std::bind(&AegisBot::js_end, this, std::placeholders::_1, std::placeholders::_2);
+    bot.set_on_message_end(std::bind(&AegisBot::message_end, this, std::placeholders::_1, std::placeholders::_2));
+    bot.set_on_js_end(std::bind(&AegisBot::js_end, this, std::placeholders::_1, std::placeholders::_2));
 
-    bot.set_on_rest_end([&](uint16_t _code)
+    bot.set_on_rest_end([&](std::chrono::steady_clock::time_point start_time, uint16_t _code)
     {
+        auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_time).count();
         ++http_codes[_code];
+        counters.rest_time += us;
+        counters._rest++;
+        statsd.Metric<cppdogstatsd::Timer>("rest_time", us, 1);
     });
 
     //redis_store_keys[""] = 
@@ -471,7 +709,7 @@ void AegisBot::redis_cmd(const std::vector<char> &buf)
         if (t.size() == 1)
             return;//failure
 
-        snowflake guild_id = std::stoull(std::string{ t[1] });
+        aegis::snowflake guild_id = std::stoull(std::string{ t[1] });
         auto target_guild = bot.find_guild(guild_id);
         if (target_guild == nullptr)
             return;//no guild
@@ -597,6 +835,7 @@ void AegisBot::inject()
     bot.set_on_guild_update(std::bind(&AegisBot::GuildUpdate, this, _1));
     bot.set_on_guild_member_add(std::bind(&AegisBot::GuildMemberAdd, this, _1));
     bot.set_on_guild_member_remove(std::bind(&AegisBot::GuildMemberRemove, this, _1));
+    bot.set_on_guild_member_update(std::bind(&AegisBot::GuildMemberUpdate, this, _1));
     bot.set_on_guild_member_chunk(std::bind(&AegisBot::GuildMemberChunk, this, _1));
     bot.set_on_guild_ban_add(std::bind(&AegisBot::GuildBanAdd, this, _1));
     bot.set_on_guild_ban_remove(std::bind(&AegisBot::GuildBanRemove, this, _1));
@@ -608,12 +847,13 @@ void AegisBot::inject()
     bot.set_on_guild_role_create(std::bind(&AegisBot::GuildRoleCreate, this, _1));
     bot.set_on_guild_role_update(std::bind(&AegisBot::GuildRoleUpdate, this, _1));
     bot.set_on_guild_role_delete(std::bind(&AegisBot::GuildRoleDelete, this, _1));
+    bot.set_on_user_update(std::bind(&AegisBot::UserUpdate, this, _1));
 
 //     bot.i_typing_start = std::bind(&AegisBot::TypingStart, this, _1);
-//     bot.i_user_update = std::bind(&AegisBot::UserUpdate, this, _1);
+//     
 //     bot.i_guild_emojis_update = std::bind(&AegisBot::GuildEmojisUpdate, this, _1);
 //     bot.i_guild_integrations_update = std::bind(&AegisBot::GuildIntegrationsUpdate, this, _1);
-//     bot.i_guild_member_update = std::bind(&AegisBot::GuildMemberUpdate, this, _1);
+//     
 }
 
 void AegisBot::TypingStart(aegis::gateway::events::typing_start obj)
@@ -625,6 +865,7 @@ void AegisBot::TypingStart(aegis::gateway::events::typing_start obj)
 void AegisBot::MessageCreateDM(aegis::gateway::events::message_create obj)
 {
     statsd.Metric<Count>("dms", 1, 1);
+    counters.dms++;
     
     const auto &[channel_id, guild_id, message_id, member_id] = obj.msg.get_related_ids();
 
@@ -637,12 +878,12 @@ void AegisBot::MessageCreateDM(aegis::gateway::events::message_create obj)
             bot.log->critical("DM Member AND channel does not exist message_id: [{}] channel_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.get_content());
             return;
         }
-        bot.log->critical("DM Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.user_id, obj.msg.get_content());
+        bot.log->critical("DM Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
         return;
     }
 
     if (obj._member->get_username() != obj.msg.author.username)
-        bot.log->critical("DM Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, obj._member->get_username(), message_id, channel_id, obj.msg.author.user_id, obj.msg.get_content());
+        bot.log->critical("DM Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, obj._member->get_username(), message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
 
 
     std::string_view username{ obj._member->get_username() };
@@ -735,14 +976,6 @@ std::vector<std::string_view> AegisBot::tokenize(const std::string_view s, const
         n = s.find_first_not_of(delims.c_str(), offset);
         if (n != std::string::npos)//non-space found
         {
-            //first non-space is a matching grouping characters
-//             for (auto & c : groups)
-//             {
-//                 if (s[n] == c)
-//                 {
-// 
-//                 }
-//             }
             if (s[n] == '"')
             {
                 //this is a quoted string so capture it all
@@ -759,7 +992,6 @@ std::vector<std::string_view> AegisBot::tokenize(const std::string_view s, const
                     //assume to end of content
                     toks.emplace_back(s.substr(n, s.size() - n));
                     break;
-                    //throw std::runtime_error("Invalid parameters. No matching quote found.");
                 }
             }
             else//first non-space is regular text
@@ -827,7 +1059,7 @@ std::string AegisBot::tokenize_one(const std::string s, char delim, uint32_t & c
     return tok;
 }
 
-bool AegisBot::has_perms(Guild & g_data, member & _member, guild & _guild, std::string cmd)
+bool AegisBot::has_perms(Guild & g_data, aegis::member & _member, aegis::guild & _guild, std::string cmd)
 {
 //     if (g_data._modules[modules::Auction]->enabled)
 //     {
@@ -902,6 +1134,17 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
     if (obj.msg.type == aegis::gateway::objects::GuildMemberJoin)
         return;
 
+//     {
+//         aegis::rest::request_params rp;
+//         rp.host = "165.227.115.46";
+//         rp.port = "9998";
+//         json j;
+//         j["msgs"] = 1;
+//         rp.body = j.dump();
+//         bot.get_rest_controller().execute2(rp);
+//     }
+
+    counters.messages++;
     statsd.Metric<Count>("msgs", 1, 1);
 
     shards[obj._shard->get_id()].last_message = std::chrono::steady_clock::now();
@@ -925,14 +1168,14 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
         if (!obj.has_channel())
             bot.log->error("Member AND channel does not exist message_id: [{}] channel_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.get_content());
         else
-            bot.log->error("Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.user_id, obj.msg.get_content());
+            bot.log->error("Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
         return;
     }
 
     auto & _member = obj.get_member();
 
     if (_member.get_username() != obj.msg.author.username)
-        bot.log->error("Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, obj._member->get_username(), message_id, channel_id, obj.msg.author.user_id, obj.msg.get_content());
+        bot.log->error("Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, obj._member->get_username(), message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
 
     std::string_view username{ obj._member->get_username() };
 
@@ -972,7 +1215,7 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
     if (g_data.ignore_bots && obj.msg.is_bot())
         return;
 
-    const snowflake & guild_owner_id = _guild.get_owner();
+    const aegis::snowflake & guild_owner_id = _guild.get_owner();
 
     //check if user is guild owner or not
     //override perms for emergency and assistance. this could be accomplished in private
@@ -1206,7 +1449,7 @@ void AegisBot::MessageUpdate(aegis::gateway::events::message_update obj)
     // second update, channel_id embeds guild_id id
     {
         std::shared_lock<std::shared_mutex> l(m_message);
-        snowflake message_id = obj.msg.get_id();
+        aegis::snowflake message_id = obj.msg.get_id();
         auto it = message_history.find(message_id);
         if (it != message_history.end())
         {
@@ -1267,9 +1510,18 @@ void AegisBot::MessageDeleteBulk(aegis::gateway::events::message_delete_bulk obj
 
 void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
 {
+//     {
+//         aegis::rest::request_params rp;
+//         rp.host = "165.227.115.46";
+//         rp.port = "9998";
+//         json j;
+//         j["guilds"] = 1;
+//         rp.body = j.dump();
+//         bot.get_rest_controller().execute2(rp);
+//     }
     statsd.Metric<Gauge>("guilds", bot.guilds.size(), 1);
  
-    snowflake & guild_id = obj._guild.guild_id;
+    aegis::snowflake & guild_id = obj._guild.guild_id;
    
     auto & g_data = guild_data[guild_id];
 
@@ -1289,66 +1541,101 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
 //     }
 
     //store roles
-//     {
-//         std::string guild_roles_key{ fmt::format("{}:roles", g_data.redis_prefix) };
-//         for (const auto & r : obj._guild.roles)
-//         {
-//             std::string role_key{ fmt::format("{}:roles:{}", g_data.redis_prefix, r.role_id) };
-// 
-//             std::vector<std::string> vals;
-//             vals.emplace_back(role_key);
-//             vals.emplace_back("name");
-//             vals.emplace_back(r.name);
-//             vals.emplace_back("position");
-//             vals.emplace_back(std::to_string(r.position));
-//             vals.emplace_back("color");
-//             vals.emplace_back(std::to_string(r.color));
-//             vals.emplace_back("hoist");
-//             vals.emplace_back(r.hoist?"1":"0");
-//             vals.emplace_back("managed");
-//             vals.emplace_back(r.managed?"1":"0");
-//             vals.emplace_back("mentionable");
-//             vals.emplace_back(r.mentionable?"1":"0");
-//             vals.emplace_back("permission");
-//             vals.emplace_back(std::to_string((int64_t)r._permission));
-//             hmset(vals);
-//         }
-//         std::vector<std::string> rls;
-//         rls.emplace_back(guild_roles_key);
-//         for (const auto & r : obj._guild.roles)
-//             rls.emplace_back(std::to_string(r.role_id));
-// 
-//         sadd(rls);
-//     }
+    {
+        std::string guild_roles_key{ fmt::format("{}:roles", g_data.redis_prefix) };
+        for (const auto & r : obj._guild.roles)
+        {
+            std::string role_key{ fmt::format("{}:roles:{}", g_data.redis_prefix, r.role_id) };
+
+            std::vector<std::string> vals;
+            vals.emplace_back(role_key);
+            vals.emplace_back("name");
+            vals.emplace_back(r.name);
+            vals.emplace_back("position");
+            vals.emplace_back(std::to_string(r.position));
+            vals.emplace_back("color");
+            vals.emplace_back(std::to_string(r.color));
+            vals.emplace_back("hoist");
+            vals.emplace_back(r.hoist?"1":"0");
+            vals.emplace_back("managed");
+            vals.emplace_back(r.managed?"1":"0");
+            vals.emplace_back("mentionable");
+            vals.emplace_back(r.mentionable?"1":"0");
+            vals.emplace_back("permission");
+            vals.emplace_back(std::to_string((int64_t)r._permission));
+            hmset(vals);
+        }
+        std::vector<std::string> rls;
+        rls.emplace_back(guild_roles_key);
+        for (const auto & r : obj._guild.roles)
+            rls.emplace_back(std::to_string(r.role_id));
+
+        sadd(rls);
+    }
+
+    //store channels
+    {
+        std::string guild_channels_key{ fmt::format("{}:channels", g_data.redis_prefix) };
+        for (const auto & r : obj._guild.channels)
+        {
+            std::string channel_key{ fmt::format("{}:channels:{}", g_data.redis_prefix, r.channel_id) };
+
+            std::vector<std::string> vals;
+            vals.emplace_back(channel_key);
+            vals.emplace_back("name");
+            vals.emplace_back(r.name);
+            vals.emplace_back("position");
+            vals.emplace_back(std::to_string(r.position));
+            vals.emplace_back("bitrate");
+            vals.emplace_back(std::to_string(r.bitrate));
+            vals.emplace_back("userlimit");
+            vals.emplace_back(std::to_string(r.userlimit));
+            vals.emplace_back("type");
+            vals.emplace_back(std::to_string(r.type));
+            vals.emplace_back("topic");
+            vals.emplace_back(r.topic);
+            vals.emplace_back("nsfw");
+            vals.emplace_back(std::to_string(r.nsfw));
+            vals.emplace_back("parent_id");
+            vals.emplace_back(std::to_string(r.parent_id));
+            hmset(vals);
+        }
+        std::vector<std::string> rls;
+        rls.emplace_back(guild_channels_key);
+        for (const auto & r : obj._guild.channels)
+            rls.emplace_back(std::to_string(r.channel_id));
+
+        sadd(rls);
+    }
 
     load_guild(guild_id, g_data);
 
     //save data
 
-//     std::vector<std::string> vals;
-//     vals.emplace_back(g_data.redis_prefix);
-//     vals.emplace_back("name");
-//     vals.emplace_back(obj._guild.name);
-//     vals.emplace_back("verification_level");
-//     vals.emplace_back(std::to_string(obj._guild.verification_level));
-//     vals.emplace_back("region");
-//     vals.emplace_back(obj._guild.region);
-//     vals.emplace_back("mfa_level");
-//     vals.emplace_back(std::to_string(obj._guild.mfa_level));
-//     vals.emplace_back("icon");
-//     vals.emplace_back(obj._guild.icon);
-//     vals.emplace_back("joined_at");
-//     vals.emplace_back(obj._guild.joined_at);
-//     vals.emplace_back("splash");
-//     vals.emplace_back(obj._guild.splash);
-//     hmset(vals);
-//     auto g = bot.find_guild(guild_id);
-//     if (!g)
-//         return;
-//     hset({ g_data.redis_prefix, "perms", std::to_string(g->base_permissions()) });
+    std::vector<std::string> vals;
+    vals.emplace_back(g_data.redis_prefix);
+    vals.emplace_back("name");
+    vals.emplace_back(obj._guild.name);
+    vals.emplace_back("verification_level");
+    vals.emplace_back(std::to_string(obj._guild.verification_level));
+    vals.emplace_back("region");
+    vals.emplace_back(obj._guild.region);
+    vals.emplace_back("mfa_level");
+    vals.emplace_back(std::to_string(obj._guild.mfa_level));
+    vals.emplace_back("icon");
+    vals.emplace_back(obj._guild.icon);
+    vals.emplace_back("joined_at");
+    vals.emplace_back(obj._guild.joined_at);
+    vals.emplace_back("splash");
+    vals.emplace_back(obj._guild.splash);
+    hmset(vals);
+    auto g = bot.find_guild(guild_id);
+    if (!g)
+        return;
+    hset({ g_data.redis_prefix, "perms", std::to_string(g->base_permissions()) });
 }
 
-void AegisBot::load_guild(snowflake guild_id, Guild & g_data)
+void AegisBot::load_guild(aegis::snowflake guild_id, Guild & g_data)
 {
     aegis::shards::shard * _shard = &bot.get_shard_by_guild(guild_id);
 
@@ -1505,6 +1792,15 @@ void AegisBot::load_guild(snowflake guild_id, Guild & g_data)
 
     }
 
+    //ignored channels
+    {
+        if (auto ignored_ch = get_vector(fmt::format("{}:ignored_channels", g_data.redis_prefix)); !ignored_ch.empty())
+        {
+            for (const auto & id : ignored_ch)
+                g_data.ignored_channels.emplace_back(std::stoull(id));
+        }
+    }
+
     g_data.loaded = true;
 }
 
@@ -1557,6 +1853,123 @@ void AegisBot::toggle_mod_override(Guild & g_data, const modules mod, const bool
     g_data._modules[mod]->admin_override = toggle;
 }
 
+aegis::snowflake AegisBot::get_snowflake(const std::string_view name, aegis::guild & _guild) const noexcept
+{
+    if (name.empty())
+        return { 0 };
+    try
+    {
+        if (name[0] == '<')
+        {
+            //mention param
+
+            std::string::size_type pos = name.find_first_of('>');
+            if (pos == std::string::npos)
+                return { 0 };
+            if (name[2] == '!')//mobile mention. strip <@!
+                return std::stoull(std::string{ name.substr(3, pos - 1) });
+            else  if (name[2] == '&')//role mention. strip <@&
+                return std::stoull(std::string{ name.substr(3, pos - 1) });
+            else  if (name[1] == '#')//channel mention. strip <#
+                return std::stoull(std::string{ name.substr(2, pos - 1) });
+            else//regular mention. strip <@
+                return std::stoull(std::string{ name.substr(2, pos - 1) });
+        }
+        else if (std::isdigit(name[0]))
+        {
+            //snowflake param
+            return std::stoull(std::string{ name });
+        }
+        else
+        {
+            //most likely username#discriminator param
+            std::string::size_type n = name.find('#');
+            if (n != std::string::npos)
+            {
+                //found # separator
+                std::shared_lock<std::shared_mutex> l(_guild.mtx());
+                for (auto & m : _guild.get_members())
+                    if (m.second->get_full_name() == name)
+                        return { m.second->get_id() };
+                return { 0 };
+            }
+            return { 0 };//# not found. unknown parameter. unicode may trigger this.
+        }
+    }
+    catch (std::invalid_argument &)
+    {
+        return { 0 };
+    }
+}
+
+std::tuple<AegisBot::mention_type, aegis::snowflake> AegisBot::analyze_mention(std::string_view str) const noexcept
+{
+    if (str.empty())
+        return { Fail, {0} };
+    try
+    {
+        if ((str.front() == '<') && (str.back() == '>'))
+        {
+            // nickname
+            if ((str[1] == '@') && (str[2] == '!'))
+            {
+                str.remove_suffix(1);
+                str.remove_prefix(3);
+                return { Nickname, std::stoull(std::string{ str }) };
+            }
+            // role
+            else if ((str[1] == '@') && (str[2] == '&'))
+            {
+                str.remove_suffix(1);
+                str.remove_prefix(3);
+                return { Role, std::stoull(std::string{ str }) };
+            }
+            // user
+            else if (str[1] == '@')
+            {
+                str.remove_suffix(1);
+                str.remove_prefix(2);
+                return { User, std::stoull(std::string{ str }) };
+            }
+            // channel
+            else if (str[1] == '#')
+            {
+                str.remove_suffix(1);
+                str.remove_prefix(2);
+                return { Channel, std::stoull(std::string{ str }) };
+            }
+            // emoji
+            else if (str[1] == ':')
+            {
+                auto pos = str.find_last_of(':');
+                if (pos == std::string::npos)
+                    return { Fail, {0} };
+                str.remove_suffix(1);
+                str.remove_prefix(pos+1);
+                return { Emoji, std::stoull(std::string{ str }) };
+            }
+            // animated emoji
+            else if ((str[1] == 'a') && (str[2] == ':'))
+            {
+                auto pos = str.find_last_of(':');
+                if (pos == std::string::npos)
+                    return { Fail, {0} };
+                str.remove_suffix(1);
+                str.remove_prefix(pos+1);
+                return { AnimatedEmoji, std::stoull(std::string{ str }) };
+            }
+            else
+            {
+                return { Fail, {0} };
+            }
+        }
+    }
+    catch (std::invalid_argument &)
+    {
+    }
+    return { Fail, {0} };
+}
+
 bool AegisBot::hset(const std::string_view key, std::vector<std::string> value, Guild & g_data)
 {
     return basic_action("HSET", fmt::format("{}:{}", g_data.redis_prefix, key), value);
@@ -1577,6 +1990,183 @@ std::vector<std::string> AegisBot::get_vector(const std::string_view key, Guild 
     return get_vector(fmt::format("{}:{}", g_data.redis_prefix, key));
 }
 
+std::string AegisBot::result_action(const std::string_view action, const std::vector<std::string> & value)
+{
+    std::lock_guard<std::mutex> lock(r_mutex);
+    try
+    {
+        redisclient::RedisValue result;
+        std::deque<redisclient::RedisBuffer> v;
+        for (auto & k : value)
+            v.emplace_back(k.data());
+        result = redis.command(std::string{ action }, v);
+        if (result.isOk())
+            return result.toString();
+        else if (result.isError())
+        {
+            std::stringstream ss;
+            for (const auto & a : value)
+                ss << a << ' ';
+            throw aegis::exception(fmt::format("result_action({}) failure: {} || {}", action, result.toString(), ss.str()), aegis::make_error_code(aegis::error::bad_redis_request));
+        }
+        throw aegis::exception(fmt::format("result_action({}) failure (no error, no ok)", action), aegis::make_error_code(aegis::error::bad_redis_request));
+    }
+    catch (std::exception & e)
+    {
+        //reconstruct query
+        fmt::MemoryWriter w;
+        w << action;
+        for (auto & v : value)
+            w << ' ' << v;
+        bot.log->error("E: {} || {}", e.what(), w.str());
+    }
+    return {};
+}
+
+std::string AegisBot::result_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
+{
+    std::lock_guard<std::mutex> lock(r_mutex);
+    try
+    {
+        redisclient::RedisValue result;
+        std::deque<redisclient::RedisBuffer> v;
+        v.emplace_back(key.data());
+        for (auto & k : value)
+            v.emplace_back(k.data());
+        result = redis.command(std::string{ action }, v);
+        if (result.isOk())
+            return result.toString();
+        else if (result.isError())
+        {
+            std::stringstream ss;
+            ss << key << ' ';
+            for (const auto & a : value)
+                ss << a << ' ';
+            throw aegis::exception(fmt::format("result_action({}) failure: {} || {}", action, result.toString(), ss.str()), aegis::make_error_code(aegis::error::bad_redis_request));
+        }
+        throw aegis::exception(fmt::format("result_action({}) failure (no error, no ok)", action), aegis::make_error_code(aegis::error::bad_redis_request));
+    }
+    catch (std::exception & e)
+    {
+        //reconstruct query
+        fmt::MemoryWriter w;
+        w << action;
+        for (auto & v : value)
+            w << ' ' << v;
+        bot.log->error("E: {} || {}", e.what(), w.str());
+    }
+    return {};
+}
+
+std::future<std::string> AegisBot::async_get_result(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
+{
+    using result = asio::async_result<asio::use_future_t<>, void(std::string)>;
+    using handler = typename result::completion_handler_type;
+
+    handler exec(asio::use_future);
+    result ret(exec);
+
+    asio::post(_io_service, asio::bind_executor(strand, [exec, this, action = std::string{ action }, key = std::string{ key }, value]() mutable
+    {
+        exec(result_action(action, key, value));
+    }));
+
+    return ret.get();
+}
+
+std::future<aegis::rest::rest_reply> AegisBot::req_success(aegis::gateway::objects::message & msg)
+{
+    return msg.create_reaction("success:429554838083207169");
+}
+
+std::future<aegis::rest::rest_reply> AegisBot::req_fail(aegis::gateway::objects::message & msg)
+{
+    return msg.create_reaction("fail:429554869611921408");
+}
+
+std::future<aegis::rest::rest_reply> AegisBot::req_permission(aegis::gateway::objects::message & msg)
+{
+    return msg.create_reaction("no_permission:451495171779985438");
+}
+
+bool AegisBot::sadd(const std::string_view key, const std::vector<std::string> & value, Guild & g_data)
+{
+    return basic_action("SADD", fmt::format("{}:{}", g_data.redis_prefix, key), value);
+}
+
+bool AegisBot::srem(const std::string_view key, const std::vector<std::string> & value, Guild & g_data)
+{
+    return basic_action("SREM", fmt::format("{}:{}", g_data.redis_prefix, key), value);
+}
+
+bool AegisBot::basic_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
+{
+    asio::post(_io_service, asio::bind_executor(strand, [this, key = std::string{ key }, action = std::string{ action }, value = std::move(value)]()
+    {
+        std::lock_guard<std::mutex> lock(r_mutex);
+        try
+        {
+            redisclient::RedisValue result;
+            std::deque<redisclient::RedisBuffer> v;
+            v.emplace_back(key.data());
+            for (auto & k : value)
+                v.emplace_back(k.data());
+            result = redis.command(std::string{ action }, v);
+            if (result.isOk())
+                return;
+            else if (result.isError())
+            {
+                std::stringstream ss;
+                ss << key << ' ';
+                for (const auto & a : value)
+                    ss << a << ' ';
+                throw aegis::exception(fmt::format("basic_action({}) failure: {} || {}", action, result.toString(), ss.str()), aegis::make_error_code(aegis::error::bad_redis_request));
+            }
+            throw aegis::exception(fmt::format("result_action({}) failure (no error, no ok)", action), aegis::make_error_code(aegis::error::bad_redis_request));
+        }
+        catch (std::exception & e)
+        {
+            bot.log->error("E: {}", e.what());
+        }
+    }));
+    return true;
+}
+
+bool AegisBot::basic_action(const std::string_view action, const std::vector<std::string> & value)
+{
+    asio::post(_io_service, asio::bind_executor(strand, [this, action = std::string{ action }, value = std::move(value)]()
+    {
+        try
+        {
+            std::lock_guard<std::mutex> lock(r_mutex);
+            redisclient::RedisValue result;
+            std::deque<redisclient::RedisBuffer> v;
+            for (auto & k : value)
+                v.emplace_back(k.data());
+            result = redis.command(std::string{ action }, v);
+        }
+        catch (std::exception & e)
+        {
+            bot.log->error("E: {}", e.what());
+        }
+    }));
+    return true;
+}
+
+void AegisBot::event_log(const json & j, const std::string & path)
+{
+    aegis::rest::request_params rp;
+    rp.host = "165.227.115.46";
+    rp.port = "9998";
+    if (is_production)
+        rp.path = path;
+    else
+        rp.path = "/test" + path;
+
+    rp.body = j.dump();
+    bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+}
+
 bool AegisBot::valid_command(std::string_view cmd)
 {
     auto it = std::find(commands.begin(), commands.end(), std::string{ cmd });
@@ -1585,7 +2175,7 @@ bool AegisBot::valid_command(std::string_view cmd)
     return true;
 }
 
-bool AegisBot::command_enabled(snowflake guild_id, std::string cmd)
+bool AegisBot::command_enabled(aegis::snowflake guild_id, std::string cmd)
 {
     auto it = guild_data.find(guild_id);
     if (it == guild_data.end())
@@ -1632,7 +2222,7 @@ void AegisBot::GuildDelete(aegis::gateway::events::guild_delete obj)
     if (obj.unavailable)
         return;
   
-    snowflake & guild_id = obj.guild_id;
+    aegis::snowflake & guild_id = obj.guild_id;
 
     auto & g_data = guild_data[guild_id];
 
@@ -1658,7 +2248,7 @@ void AegisBot::GuildDelete(aegis::gateway::events::guild_delete obj)
 //         bot.find_channel(bot_control_channel)->create_message(guild_msg);
 }
 
-Guild & AegisBot::get_guild(snowflake id)
+Guild & AegisBot::get_guild(aegis::snowflake id)
 {
     auto it = guild_data.find(id);
     if (it == guild_data.end())
@@ -1671,27 +2261,54 @@ Guild & AegisBot::get_guild(snowflake id)
 
 void AegisBot::UserUpdate(aegis::gateway::events::user_update obj)
 {
+    auto & m = obj._user;
+
+    // config:member:id
+    std::string user_key{ fmt::format("{}:{}", r_m_config, obj._user.id) };
+
+    // user specific data
+    std::vector<std::string> vals;
+    vals.emplace_back(user_key);
+    vals.emplace_back("avatar");
+    vals.emplace_back(m.avatar);
+    vals.emplace_back("discriminator");
+    vals.emplace_back(m.discriminator);
+    vals.emplace_back("bot");
+    vals.emplace_back(std::to_string(m.is_bot()));
+    vals.emplace_back("username");
+    vals.emplace_back(m.username);
+    vals.emplace_back("last_update");
+    vals.emplace_back(std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
+    hmset(vals);
 }
 
 void AegisBot::Ready(aegis::gateway::events::ready obj)
 {
     shards[obj._shard->get_id()].last_message = std::chrono::steady_clock::now();
+
+    json j;
+    j["shard:connects"] = 1;
+    event_log(j, "/shards");
 }
 
 void AegisBot::Resumed(aegis::gateway::events::resumed obj)
 {
     shards[obj._shard->get_id()].last_message = std::chrono::steady_clock::now();
+
+    json j;
+    j["shard:resumes"] = 1;
+    event_log(j, "/shards");
 }
 
 void AegisBot::ChannelCreate(aegis::gateway::events::channel_create obj)
 {
-    if (obj._channel.type == aegis::gateway::objects::channel_gw::DirectMessage)
+    if (obj._channel.type == aegis::gateway::objects::channel::DirectMessage)
     {
-        auto it = dm_channels.find(obj._channel.recipients.at(0).user_id);
+        auto it = dm_channels.find(obj._channel.recipients.at(0).id);
         if (it == dm_channels.end())
         {
-            dm_channels.emplace(obj._channel.recipients.at(0).user_id, obj._channel.channel_id);
-            hset({ "config:dms", std::to_string(obj._channel.recipients.at(0).user_id), std::to_string(obj._channel.channel_id) });
+            dm_channels.emplace(obj._channel.recipients.at(0).id, obj._channel.channel_id);
+            hset({ "config:dms", std::to_string(obj._channel.recipients.at(0).id), std::to_string(obj._channel.channel_id) });
         }
     }
 }
@@ -1736,60 +2353,72 @@ void AegisBot::GuildBanRemove(aegis::gateway::events::guild_ban_remove obj)
 
 void AegisBot::GuildMemberAdd(aegis::gateway::events::guild_member_add obj)
 {
-//     if (obj._member._user.user_id > 0)
-//     {
-//         snowflake guild_id = obj._member.guild_id;
-//         Guild & g_data = get_guild(guild_id);
-// 
-//         std::string user_key{ fmt::format("{}:{}", r_m_config, obj._member._user.user_id) };
-//         std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, obj._member._user.user_id, guild_id) };
-// 
-//         auto & m = obj._member._user;
-//         auto & md = obj._member;
-// 
-//         std::string sdm_ch = hget({ "config:dms", std::to_string(md._user.user_id) });
-//         if (!sdm_ch.empty())
-//         {
-//             snowflake dm_ch = std::stoull(sdm_ch);
-//             dm_channels.emplace(md._user.user_id, dm_ch);
-//         }
-// 
-//         std::vector<std::string> vals;
-//         vals.emplace_back(user_key);
-//         vals.emplace_back("avatar");
-//         vals.emplace_back(m.avatar);
-//         vals.emplace_back("discriminator");
-//         vals.emplace_back(m.discriminator);
-//         vals.emplace_back("bot");
-//         vals.emplace_back(std::to_string(m.is_bot()));
-//         vals.emplace_back("username");
-//         vals.emplace_back(m.username);
-//         vals.emplace_back("joined_at");
-//         vals.emplace_back(md.joined_at);
-//         hmset(vals);
+    if (obj._member._user.id > 0)
+    {
+        aegis::snowflake guild_id = obj._member.guild_id;
+        Guild & g_data = get_guild(guild_id);
+
+        std::string user_key{ fmt::format("{}:{}", r_m_config, obj._member._user.id) };
+        std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, obj._member._user.id, guild_id) };
+
+        auto & m = obj._member._user;
+        auto & md = obj._member;
+
+        {
+            auto sdm_ch = dm_channels.find(md._user.id);
+            if (sdm_ch == dm_channels.end())
+            {
+                std::string sdm_ch_str = hget({ "config:dms", std::to_string(md._user.id) });
+                if (!sdm_ch_str.empty())
+                {
+                    try
+                    {
+                        dm_channels.emplace(md._user.id, std::stoull(sdm_ch_str));
+                    }
+                    catch (std::exception & e)
+                    {}
+                }
+            }
+            else
+                dm_channels.emplace(md._user.id, sdm_ch->second);
+        }
+
+        std::vector<std::string> vals;
+        vals.emplace_back(user_key);
+        vals.emplace_back("avatar");
+        vals.emplace_back(m.avatar);
+        vals.emplace_back("discriminator");
+        vals.emplace_back(m.discriminator);
+        vals.emplace_back("bot");
+        vals.emplace_back(std::to_string(m.is_bot()));
+        vals.emplace_back("username");
+        vals.emplace_back(m.username);
+        hmset(vals);
+
+        hmset({ guild_key, "nick", md.nick, "joined_at", md.joined_at });
+
+//         hset({ user_key, "avatar", m.avatar });
+//         hset({ user_key, "discriminator", m.discriminator });
+//         hset({ user_key, "bot", std::to_string(m.is_bot()) });
+//         hset({ user_key, "username", m.username });
 // 
 //         hset({ guild_key, "nick", md.nick });
-// 
-// //         hset({ user_key, "avatar", m.avatar });
-// //         hset({ user_key, "discriminator", m.discriminator });
-// //         hset({ user_key, "bot", std::to_string(m.is_bot()) });
-// //         hset({ user_key, "username", m.username });
-// // 
-// //         hset({ guild_key, "nick", md.nick });
-// //         hset({ guild_key, "joined_at", md.joined_at });
-// 
-//         if (!md.roles.empty())
-//         {
-//             std::string roles_key{ fmt::format("{}:{}:guild:{}:roles", r_m_config, obj._member._user.user_id, guild_id) };
-// 
-//             std::vector<std::string> rls;
-//             rls.emplace_back(roles_key);
-//             for (const auto & r : md.roles)
-//                 rls.emplace_back(std::to_string(r));
-// 
-//             sadd(rls);
-//         }
-//     }
+//         hset({ guild_key, "joined_at", md.joined_at });
+
+        if (!md.roles.empty())
+        {
+            std::string roles_key{ fmt::format("{}:{}:guild:{}:roles", r_m_config, obj._member._user.id, guild_id) };
+
+            del(fmt::format("{}:guild:{}:roles", user_key, guild_id));
+
+            std::vector<std::string> rls;
+            rls.emplace_back(roles_key);
+            for (const auto & r : md.roles)
+                rls.emplace_back(std::to_string(r));
+
+            sadd(rls);
+        }
+    }
 }
 
 void AegisBot::GuildMemberRemove(aegis::gateway::events::guild_member_remove obj)
@@ -1798,6 +2427,50 @@ void AegisBot::GuildMemberRemove(aegis::gateway::events::guild_member_remove obj
 
 void AegisBot::GuildMemberUpdate(aegis::gateway::events::guild_member_update obj)
 {
+    auto & m = obj._user;
+
+    aegis::snowflake guild_id = obj.guild_id;
+    Guild & g_data = get_guild(guild_id);
+
+    // config:member:id
+    std::string user_key{ fmt::format("{}:{}", r_m_config, obj._user.id) };
+    // config:member:id:guild:guildid
+    std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, obj._user.id, guild_id) };
+
+    // user specific data
+    {
+        std::vector<std::string> vals;
+        vals.emplace_back(user_key);
+        vals.emplace_back("avatar");
+        vals.emplace_back(m.avatar);
+        vals.emplace_back("discriminator");
+        vals.emplace_back(m.discriminator);
+        vals.emplace_back("bot");
+        vals.emplace_back(std::to_string(m.is_bot()));
+        vals.emplace_back("username");
+        vals.emplace_back(m.username);
+        vals.emplace_back("last_update");
+        vals.emplace_back(std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
+        hmset(vals);
+    }
+
+    // guild specific data
+    hset({ guild_key, "nick", obj.nick });
+
+    if (!obj.roles.empty())
+    {
+        // config:member:id:guild:guildid:roles
+        std::string roles_key{ fmt::format("{}:guild:{}:roles", user_key, guild_id) };
+
+        del(fmt::format("{}:guild:{}:roles", user_key, guild_id));
+
+        std::vector<std::string> rls;
+        rls.emplace_back(roles_key);
+        for (const auto & r : obj.roles)
+            rls.emplace_back(std::to_string(r));
+
+        sadd(rls);
+    }
 }
 
 void AegisBot::GuildMemberChunk(aegis::gateway::events::guild_members_chunk obj)
@@ -1806,35 +2479,46 @@ void AegisBot::GuildMemberChunk(aegis::gateway::events::guild_members_chunk obj)
     
     for (const auto & md : obj.members)
     {
-        if (md._user.user_id > 0)
+        if (md._user.id > 0)
         {
-            snowflake guild_id = obj.guild_id;
-            Guild & g_data = get_guild(guild_id);
+            aegis::snowflake guild_id = obj.guild_id;
+            //Guild & g_data = get_guild(guild_id);
 
-            std::string user_key{ fmt::format("{}:{}", r_m_config, md._user.user_id) };
-            std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, md._user.user_id, guild_id) };
+            // config:member:id
+            std::string user_key{ fmt::format("{}:{}", r_m_config, md._user.id) };
+            // config:member:id:guild:guildid
+            std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, md._user.id, guild_id) };
 
             auto & m = md._user;
 
-            auto sdm_ch = dm_channels.find(md._user.user_id);
+            auto sdm_ch = dm_channels.find(md._user.id);
             if (sdm_ch != dm_channels.end())
-                dm_channels.emplace(md._user.user_id, sdm_ch->second);
+                dm_channels.emplace(md._user.id, sdm_ch->second);
 
-            std::vector<std::string> vals;
-            vals.emplace_back(user_key);
-            vals.emplace_back("avatar");
-            vals.emplace_back(m.avatar);
-            vals.emplace_back("discriminator");
-            vals.emplace_back(m.discriminator);
-            vals.emplace_back("bot");
-            vals.emplace_back(std::to_string(m.is_bot()));
-            vals.emplace_back("username");
-            vals.emplace_back(m.username);
-            vals.emplace_back("nick");
-            vals.emplace_back(md.nick);
-            vals.emplace_back("joined_at");
-            vals.emplace_back(md.joined_at);
-            hmset(vals);
+            {
+                std::vector<std::string> vals;
+                vals.emplace_back(user_key);
+                vals.emplace_back("avatar");
+                vals.emplace_back(m.avatar);
+                vals.emplace_back("discriminator");
+                vals.emplace_back(m.discriminator);
+                vals.emplace_back("bot");
+                vals.emplace_back(std::to_string(m.is_bot()));
+                vals.emplace_back("username");
+                vals.emplace_back(m.username);
+                vals.emplace_back("last_update");
+                vals.emplace_back(std::to_string(std::chrono::system_clock::now().time_since_epoch().count()));
+                hmset(vals);
+            }
+            {
+                std::vector<std::string> vals;
+                vals.emplace_back(guild_key);
+                vals.emplace_back("nick");
+                vals.emplace_back(md.nick);
+                vals.emplace_back("joined_at");
+                vals.emplace_back(md.joined_at);
+                hmset(vals);
+            }
 
             if (!md.roles.empty())
             {
@@ -1854,48 +2538,9 @@ void AegisBot::GuildMemberChunk(aegis::gateway::events::guild_members_chunk obj)
     bot.log->trace("count:{} dura:{}us", obj.members.size(), std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - old_time).count());
 }
 
-// void AegisBot::GuildMemberChunk(aegis::gateway::events::guild_members_chunk obj)
-// {
-//     fmt::MemoryWriter w;
-// 
-//     auto old_time = std::chrono::steady_clock::now();
-// 
-//     for (const auto & md : obj.members)
-//     {
-//         if (md._user.user_id > 0)
-//         {
-//             snowflake guild_id = obj.guild_id;
-//             Guild & g_data = get_guild(guild_id);
-// 
-//             std::string user_key{ fmt::format("{}:{}", r_m_config, md._user.user_id) };
-//             std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, md._user.user_id, guild_id) };
-// 
-//             auto & m = md._user;
-// 
-//             w << "SADD" << ' ' << user_key << ' ' << "avatar" << ' ' << m.avatar << ' ' << "discriminator" << ' ' << m.discriminator
-//                 << ' ' << "bot" << ' ' << std::to_string(m.is_bot()) << ' ' << "username" << ' ' << m.username
-//                 << ' ' << "nick" << ' ' << md.nick << ' ' << "joined_at" << ' ' << md.joined_at << "\r\n";
-// 
-//             if (!md.roles.empty())
-//             {
-//                 std::string roles_key{ fmt::format("{}:guild:{}:roles", user_key, guild_id) };
-// 
-//                 w << "DELETE" << ' ' << roles_key << "\r\n"
-//                     << "SADD" << ' ' << roles_key;
-// 
-//                 for (const auto & r : md.roles)
-//                     w << "\r\nSADD" << ' ' << roles_key << ' ' << std::to_string(r);
-//             }
-//         }
-//     }
-//     if (!do_raw(w.str()))
-//         bot.log->error("Fail on GuildMemberChunk");
-//     bot.log->trace("count:{} dura:{}us", obj.members.size(), std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - old_time).count());
-// }
-
 void AegisBot::GuildRoleCreate(aegis::gateway::events::guild_role_create obj)
 {
-    snowflake guild_id = obj.guild_id;
+    aegis::snowflake guild_id = obj.guild_id;
     Guild & g_data = get_guild(guild_id);
 
     auto & r = obj._role;
@@ -1925,7 +2570,7 @@ void AegisBot::GuildRoleCreate(aegis::gateway::events::guild_role_create obj)
 
 void AegisBot::GuildRoleUpdate(aegis::gateway::events::guild_role_update obj)
 {
-    snowflake guild_id = obj.guild_id;
+    aegis::snowflake guild_id = obj.guild_id;
     Guild & g_data = get_guild(guild_id);
 
     auto & r = obj._role;
@@ -1953,7 +2598,7 @@ void AegisBot::GuildRoleUpdate(aegis::gateway::events::guild_role_update obj)
 
 void AegisBot::GuildRoleDelete(aegis::gateway::events::guild_role_delete obj)
 {
-    snowflake guild_id = obj.guild_id;
+    aegis::snowflake guild_id = obj.guild_id;
     Guild & g_data = get_guild(guild_id);
 
     auto & r = obj.role_id;
@@ -1967,16 +2612,18 @@ void AegisBot::GuildRoleDelete(aegis::gateway::events::guild_role_delete obj)
 
 void AegisBot::PresenceUpdate(aegis::gateway::events::presence_update obj)
 {
+//     {
+//         aegis::rest::request_params rp;
+//         rp.host = "165.227.115.46";
+//         rp.port = "9998";
+//         json j;
+//         j["presence"] = 1;
+//         rp.body = j.dump();
+//         bot.get_rest_controller().execute2(rp);
+//     }
+    counters.presences++;
     statsd.Metric<Count>("presence", 1, 1);
 }
-
-// void AegisBot::VoiceStateUpdate(aegis::gateway::events::voice_state_update obj)
-// {
-// }
-// 
-// void AegisBot::VoiceServerUpdate(aegis::gateway::events::voice_server_update obj)
-// {
-// }
 
 const json AegisBot::make_info_obj(aegis::shards::shard * _shard) const noexcept
 {

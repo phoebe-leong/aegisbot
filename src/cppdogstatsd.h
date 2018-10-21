@@ -16,6 +16,7 @@
 #include <asio/io_context.hpp>
 #include <asio/basic_datagram_socket.hpp>
 #include <asio/ip/udp.hpp>
+#include <mutex>
 
 
 namespace cppdogstatsd

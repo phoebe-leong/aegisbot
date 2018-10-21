@@ -12,8 +12,13 @@
 #include "Guild.h"
 #include <aegis/channel.hpp>
 #include <nlohmann/json.hpp>
+#include <aegis/member.hpp>
+//#include <aegis/core.hpp>
 
+using aegis::snowflake;
+using aegis::member;
 using aegis::channel;
+using aegis::guild;
 
 std::string mod_auction::r_prefix = "auction";
 
@@ -90,7 +95,7 @@ void mod_auction::load(AegisBot & bot)
     }
     catch (std::exception & e)
     {
-        bot.bot.log->error("Exception loading auction module data for guild [{}] e[{}]", g_data.guild_id, e.what());
+        bot.log->error("Exception loading auction module data for guild [{}] e[{}]", g_data.guild_id, e.what());
     }
 }
 
@@ -623,11 +628,11 @@ bool mod_auction::playerlist(shared_data & sd)
     { "footer",{ { "icon_url", "https://cdn.discordapp.com/emojis/289276304564420608.png" },{ "text", "Auction bot" } } }
     };
     auto apireply = _channel.create_message_embed("", t).get();
-    sd.ab.bot.log->info("API REPLY {} : {} : {} : {}", apireply.reply_code, apireply.remaining, apireply.reset, apireply.retry);
+    sd.ab.log->info("API REPLY {} : {} : {} : {}", apireply.reply_code, apireply.remaining, apireply.reset, apireply.retry);
     if (!apireply)
     {
         //success
-        sd.ab.bot.log->info("SUCCESS");
+        sd.ab.log->info("SUCCESS");
     }
     return true;
 }

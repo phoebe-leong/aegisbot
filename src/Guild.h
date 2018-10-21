@@ -88,4 +88,7 @@ public:
 //    std::unordered_map<modules, s_module_data_guild> enabled_modules;
     std::unordered_map<modules, Module*> _modules;
     std::unordered_map<int64_t, s_rank> ranks;
+    std::vector<aegis::snowflake> ignored_channels;
+
+    bool is_channel_ignored(aegis::snowflake channel_id);
 };

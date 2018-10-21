@@ -9,7 +9,16 @@
 
 #include "AegisBot.h"
 #include "Guild.h"
+#include <aegis/core.hpp>
+#if defined(AEGIS_HEADER_ONLY)
+#include <aegis/impl/channel.cpp>
+#include <aegis/impl/guild.cpp>
+#endif
 
+using aegis::snowflake;
+using aegis::member;
+using aegis::channel;
+using aegis::guild;
 using namespace cppdogstatsd;
 
 bool AegisBot::process_user_messages(aegis::gateway::events::message_create & obj, shared_data & sd)
@@ -651,182 +660,6 @@ bool AegisBot::process_user_messages(aegis::gateway::events::message_create & ob
         };
 
         _channel.create_message_embed({}, t);
-        return true;
-    }
-    if (toks[0] == "gperms2")
-    {
-        if (check_params(toks, 2))
-            return true;
-
-        auto _guild = obj.bot->find_guild(std::stoll(std::string(toks[1])));
-
-        if (_guild == nullptr)
-        {
-            _channel.create_message("Not in that guild");
-            return true;
-        }
-
-        aegis::permission perm = _guild->base_permissions(*_guild->self());
-        
-        json msg =
-        {
-            { "title", "AegisBot" },
-            { "description", fmt::format("Perms for [{}] : [{}]", _guild->get_name(), _guild->guild_id) },
-            { "color", rand() % 0xFFFFFF },//10599460 },
-            { "fields",
-            json::array(
-                {
-                    { { "name", "canInvite" },{ "value", fmt::format("{}", perm.can_invite()) },{ "inline", true } },
-                    { { "name", "canKick" },{ "value", fmt::format("{}", perm.can_kick()) },{ "inline", true } },
-                    { { "name", "canBan" },{ "value", fmt::format("{}", perm.can_ban()) },{ "inline", true } },
-                    { { "name", "isAdmin" },{ "value", fmt::format("{}", perm.is_admin()) },{ "inline", true } },
-                    { { "name", "canManageChannels" },{ "value", fmt::format("{}", perm.can_manage_channels()) },{ "inline", true } },
-                    { { "name", "canManageGuild" },{ "value", fmt::format("{}", perm.can_manage_guild()) },{ "inline", true } },
-                    { { "name", "canAddReactions" },{ "value", fmt::format("{}", perm.can_add_reactions()) },{ "inline", true } },
-                    { { "name", "canViewAuditLogs" },{ "value", fmt::format("{}", perm.can_view_audit_logs()) },{ "inline", true } },
-                    { { "name", "canReadMessages" },{ "value", fmt::format("{}", perm.can_read_messages()) },{ "inline", true } },
-                    { { "name", "canSendMessages" },{ "value", fmt::format("{}", perm.can_send_messages()) },{ "inline", true } },
-                    { { "name", "canTTS" },{ "value", fmt::format("{}", perm.can_tts()) },{ "inline", true } },
-                    { { "name", "canManageMessages" },{ "value", fmt::format("{}", perm.can_manage_messages()) },{ "inline", true } },
-                    { { "name", "canEmbed" },{ "value", fmt::format("{}", perm.can_embed()) },{ "inline", true } },
-                    { { "name", "canAttachFiles" },{ "value", fmt::format("{}", perm.can_attach_files()) },{ "inline", true } },
-                    { { "name", "canReadHistory" },{ "value", fmt::format("{}", perm.can_read_history()) },{ "inline", true } },
-                    { { "name", "canMentionEveryone" },{ "value", fmt::format("{}", perm.can_mention_everyone()) },{ "inline", true } },
-                    { { "name", "canExternalEmoiji" },{ "value", fmt::format("{}", perm.can_external_emoiji()) },{ "inline", true } },
-                    { { "name", "canChangeName" },{ "value", fmt::format("{}", perm.can_change_name()) },{ "inline", true } },
-                    { { "name", "canManageNames" },{ "value", fmt::format("{}", perm.can_manage_names()) },{ "inline", true } },
-                    { { "name", "canManageRoles" },{ "value", fmt::format("{}", perm.can_manage_roles()) },{ "inline", true } },
-                    { { "name", "canManageWebhooks" },{ "value", fmt::format("{}", perm.can_manage_webhooks()) },{ "inline", true } },
-                    { { "name", "canManageEmojis" },{ "value", fmt::format("{}", perm.can_manage_emojis()) },{ "inline", true } },
-                    { { "name", "canMentionEveryone" },{ "value", fmt::format("{}", perm.can_mention_everyone()) },{ "inline", true } },
-                    { { "name", "canVoiceConnect" },{ "value", fmt::format("{}", perm.can_voice_connect()) },{ "inline", true } },
-                    { { "name", "canVoiceMute" },{ "value", fmt::format("{}", perm.can_voice_mute()) },{ "inline", true } },
-                    { { "name", "canVoiceSpeak" },{ "value", fmt::format("{}", perm.can_voice_speak()) },{ "inline", true } },
-                    { { "name", "canVoiceDeafen" },{ "value", fmt::format("{}", perm.can_voice_deafen()) },{ "inline", true } },
-                    { { "name", "canVoiceMove" },{ "value", fmt::format("{}", perm.can_voice_move()) },{ "inline", true } },
-                    { { "name", "canVoiceActivity" },{ "value", fmt::format("{}", perm.can_voice_activity()) },{ "inline", true } }
-                })
-            }
-        };
-        _channel.create_message_embed({}, msg);
-        return true;
-    }
-
-    if (toks[0] == "gperms")
-    {
-        if (check_params(toks, 2))
-            return true;
-
-        auto _guild = obj.bot->find_guild(std::stoll(std::string(toks[1])));
-
-        if (_guild == nullptr)
-        {
-            _channel.create_message("Not in that guild");
-            return true;
-        }
-
-        aegis::permission perm = _guild->base_permissions(*_guild->self());
-
-        fmt::MemoryWriter w;
-
-        w << fmt::format("Perms for [{}] : [{}]\n", _guild->get_name(), _guild->guild_id);
-        if (perm.is_admin())
-            w << "```\nisAdmin: true\n```";
-        else
-        {
-            w << "```\n";
-            w << fmt::format("canInvite: {}\n", perm.can_invite());
-            w << fmt::format("canKick: {}\n", perm.can_kick());
-            w << fmt::format("canBan: {}\n", perm.can_ban());
-            w << fmt::format("isAdmin: {}\n", perm.is_admin());
-            w << fmt::format("canManageChannels: {}\n", perm.can_manage_channels());
-            w << fmt::format("canManageGuild: {}\n", perm.can_manage_guild());
-            w << fmt::format("canAddReactions: {}\n", perm.can_add_reactions());
-            w << fmt::format("canViewAuditLogs: {}\n", perm.can_view_audit_logs());
-            w << fmt::format("canReadMessages: {}\n", perm.can_read_messages());
-            w << fmt::format("canSendMessages: {}\n", perm.can_send_messages());
-            w << fmt::format("canTTS: {}\n", perm.can_tts());
-            w << fmt::format("canManageMessages: {}\n", perm.can_manage_messages());
-            w << fmt::format("canEmbed: {}\n", perm.can_embed());
-            w << fmt::format("canAttachFiles: {}\n", perm.can_attach_files());
-            w << fmt::format("canReadHistory: {}\n", perm.can_read_history());
-            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
-            w << fmt::format("canExternalEmoiji: {}\n", perm.can_external_emoiji());
-            w << fmt::format("canChangeName: {}\n", perm.can_change_name());
-            w << fmt::format("canManageNames: {}\n", perm.can_manage_names());
-            w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
-            w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
-            w << fmt::format("canManageEmojis: {}\n", perm.can_manage_emojis());
-            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
-            w << fmt::format("canVoiceConnect: {}\n", perm.can_voice_connect());
-            w << fmt::format("canVoiceMute: {}\n", perm.can_voice_mute());
-            w << fmt::format("canVoiceSpeak: {}\n", perm.can_voice_speak());
-            w << fmt::format("canVoiceDeafen: {}\n", perm.can_voice_deafen());
-            w << fmt::format("canVoiceMove: {}\n", perm.can_voice_move());
-            w << fmt::format("canVoiceActivity: {}\n", perm.can_voice_activity());
-            w << "```";
-        }
-
-        _channel.create_message(w.str());
-        return true;
-    }
-
-    if (toks[0] == "cperms")
-    {
-        if (check_params(toks, 2))
-            return true;
-
-        auto _ch = obj.bot->find_channel(std::stoll(std::string(toks[1])));
-
-        if (_ch == nullptr)
-        {
-            _channel.create_message("Not in that channel");
-            return true;
-        }
-
-        aegis::permission perm = _ch->perms();
-
-        fmt::MemoryWriter w;
-
-        w << fmt::format("Perms for [{}] : [{}]\n", _ch->get_guild().get_name(), _ch->get_guild().guild_id);
-        if (perm.is_admin())
-            w << "```\nisAdmin: true\n```";
-        else
-        {
-            w << "```\n";
-            w << fmt::format("canInvite: {}\n", perm.can_invite());
-            w << fmt::format("canKick: {}\n", perm.can_kick());
-            w << fmt::format("canBan: {}\n", perm.can_ban());
-            w << fmt::format("isAdmin: {}\n", perm.is_admin());
-            w << fmt::format("canManageChannels: {}\n", perm.can_manage_channels());
-            w << fmt::format("canManageGuild: {}\n", perm.can_manage_guild());
-            w << fmt::format("canAddReactions: {}\n", perm.can_add_reactions());
-            w << fmt::format("canViewAuditLogs: {}\n", perm.can_view_audit_logs());
-            w << fmt::format("canReadMessages: {}\n", perm.can_read_messages());
-            w << fmt::format("canSendMessages: {}\n", perm.can_send_messages());
-            w << fmt::format("canTTS: {}\n", perm.can_tts());
-            w << fmt::format("canManageMessages: {}\n", perm.can_manage_messages());
-            w << fmt::format("canEmbed: {}\n", perm.can_embed());
-            w << fmt::format("canAttachFiles: {}\n", perm.can_attach_files());
-            w << fmt::format("canReadHistory: {}\n", perm.can_read_history());
-            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
-            w << fmt::format("canExternalEmoiji: {}\n", perm.can_external_emoiji());
-            w << fmt::format("canChangeName: {}\n", perm.can_change_name());
-            w << fmt::format("canManageNames: {}\n", perm.can_manage_names());
-            w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
-            w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
-            w << fmt::format("canManageEmojis: {}\n", perm.can_manage_emojis());
-            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
-            w << fmt::format("canVoiceConnect: {}\n", perm.can_voice_connect());
-            w << fmt::format("canVoiceMute: {}\n", perm.can_voice_mute());
-            w << fmt::format("canVoiceSpeak: {}\n", perm.can_voice_speak());
-            w << fmt::format("canVoiceDeafen: {}\n", perm.can_voice_deafen());
-            w << fmt::format("canVoiceMove: {}\n", perm.can_voice_move());
-            w << fmt::format("canVoiceActivity: {}\n", perm.can_voice_activity());
-            w << "```";
-        }
-
-        _channel.create_message(w.str());
         return true;
     }
 

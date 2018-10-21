@@ -8,6 +8,8 @@
 // 
 
 
+#include <aegis.hpp>
+#include <spdlog/spdlog.h>
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include "AegisBot.h"
@@ -15,7 +17,6 @@
 
 int main(int argc, char * argv[])
 {
-    using namespace std::chrono_literals;
     aegis::core bot(spdlog::level::level_enum::trace);
     bot.log->info("Created lib bot object");
     std::error_code ec;

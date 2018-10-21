@@ -13,7 +13,10 @@
 #include <aegis/channel.hpp>
 #include <nlohmann/json.hpp>
 
+using aegis::snowflake;
+using aegis::member;
 using aegis::channel;
+using aegis::guild;
 
 std::string mod_timer::r_prefix = "timer";
 

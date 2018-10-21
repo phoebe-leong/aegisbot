@@ -9,6 +9,7 @@
 
 #include "mod_tag.h"
 #include "AegisBot.h"
+#include <aegis/core.hpp>
 
 std::string mod_tag::r_prefix = "tag";
 
@@ -68,7 +69,7 @@ void mod_tag::load(AegisBot & bot)
                     added_tag.owner_id = std::stoull(tag_data["owner_id"]);
                     added_tag.usage_count = std::stoi(tag_data["usage_count"]);
                     added_tag.content = tag_data["content"];
-                    //bot.bot.log->info("Tag loaded: name({}) content({})", tag_name, tag_data["content"]);
+                    //bot.log->info("Tag loaded: name({}) content({})", tag_name, tag_data["content"]);
                 }
                 else if (tag_data["type"] == "a")
                 {
@@ -78,7 +79,7 @@ void mod_tag::load(AegisBot & bot)
                     added_tag.owner_id = std::stoull(tag_data["owner_id"]);
                     added_tag.usage_count = std::stoi(tag_data["usage_count"]);
                     added_tag.alias_of = tag_data["alias_of"];
-                    //bot.bot.log->info("Tag alias loaded: name({}) alias_of({})", tag_name, tag_data["alias_of"]);
+                    //bot.log->info("Tag alias loaded: name({}) alias_of({})", tag_name, tag_data["alias_of"]);
                 }
             }
         }
@@ -92,17 +93,17 @@ void mod_tag::load(AegisBot & bot)
 bool mod_tag::tag(shared_data & sd)
 {
 #pragma region stuff
-    const snowflake & channel_id = sd.channel_id;
-    const snowflake & guild_id = sd.guild_id;
-    const snowflake & message_id = sd.message_id;
-    const snowflake & member_id = sd.member_id;
-    const snowflake & guild_owner_id = sd.guild_owner_id;
+    const aegis::snowflake & channel_id = sd.channel_id;
+    const aegis::snowflake & guild_id = sd.guild_id;
+    const aegis::snowflake & message_id = sd.message_id;
+    const aegis::snowflake & member_id = sd.member_id;
+    const aegis::snowflake & guild_owner_id = sd.guild_owner_id;
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    aegis::member & _member = sd._member;
+    aegis::channel & _channel = sd._channel;
+    aegis::guild & _guild = sd._guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -391,7 +392,7 @@ bool mod_tag::tag(shared_data & sd)
 
             std::string target_name{ toks[2] };
 
-            snowflake target_user = sd.ab.get_snowflake(target_name, _guild);
+            aegis::snowflake target_user = sd.ab.get_snowflake(target_name, _guild);
 
             if (!target_user)
             {
@@ -473,7 +474,7 @@ bool mod_tag::tag(shared_data & sd)
         {
             std::string target_name{ toks[2] };
 
-            snowflake target_user = sd.ab.get_snowflake(target_name, _guild);
+            aegis::snowflake target_user = sd.ab.get_snowflake(target_name, _guild);
 
 
             if (toks.size() == 3)
@@ -578,7 +579,7 @@ bool mod_tag::tag(shared_data & sd)
             }
         }
 
-        snowflake target_user = sd.ab.get_snowflake(toks[1], _guild);
+        aegis::snowflake target_user = sd.ab.get_snowflake(toks[1], _guild);
 
         if (!target_user)
         {
@@ -608,7 +609,7 @@ bool mod_tag::tag(shared_data & sd)
             }
         }
 
-        snowflake target_user = sd.ab.get_snowflake(toks[1], _guild);
+        aegis::snowflake target_user = sd.ab.get_snowflake(toks[1], _guild);
 
         if (!target_user)
         {

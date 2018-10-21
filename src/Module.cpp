@@ -8,10 +8,11 @@
 // 
 
 #include "Module.h"
-#include <spdlog/fmt/fmt.h>
+#include "AegisBot.h"
+#include <aegis/channel.hpp>
 
 //TODO:
-#include <aegis.hpp>
+//#include <aegis.hpp>
 
 std::string Module::gen_random(const int len) const noexcept
 {

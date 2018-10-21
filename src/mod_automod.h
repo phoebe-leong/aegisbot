@@ -44,12 +44,12 @@ public:
         Ban
     };//461966371505307658 = juvenile
 
-    snowflake log_target;
+    aegis::snowflake log_target;
 
     std::unordered_map<std::string, action_taken> banned_keywords;
 
-    std::vector<snowflake> ignored_roles;//merge into ignored_ids?
-    std::vector<snowflake> ignored_users;
+    std::vector<aegis::snowflake> ignored_roles;//merge into ignored_ids?
+    std::vector<aegis::snowflake> ignored_users;
 
     std::string redis_key;
 };

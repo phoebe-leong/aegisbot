@@ -9,34 +9,36 @@
 
 #pragma once
 
-#include <aegis/config.hpp>
-#include <aegis.hpp>
-#include <algorithm>
+//#include <aegis/core.hpp>
+//#include <aegis/gateway/objects/message.hpp>
+//#include <aegis.hpp>
+#include <aegis/gateway/events/message_create.hpp>
+#include <aegis/snowflake.hpp>
 #include <redisclient/redissyncclient.h>
 #include <redisclient/redisasyncclient.h>
-#include <string>
-#include <algorithm>
-#include <stdint.h>
-#include <nlohmann/json.hpp>
-#include <unordered_map>
-#include <vector>
-#include <list>
-#include <asio.hpp>
+#include <shared_mutex>
+#include <future>
+#include <spdlog/spdlog.h>
+// #include <algorithm>
+// #include <string>
+// #include <algorithm>
+// #include <stdint.h>
+// #include <nlohmann/json.hpp>
+// #include <unordered_map>
+// #include <vector>
+// #include <list>
+// #include <asio.hpp>
 #include "structs.h"
 #include "cppdogstatsd.h"
 #include "Module.h"
 #include "Guild.h"
 #include "redis_wrap.h"
-#include "futures.h"
 
 using json = nlohmann::json;
 using asio::ip::udp;
 using namespace std::chrono_literals;
 using namespace std::literals;
 
-class member;
-class channel;
-class guild;
 class Guild;
 class AegisBot;
 
@@ -49,17 +51,17 @@ enum redis_store_key_type
 
 struct shared_data
 {
-    const snowflake & channel_id;
-    const snowflake & guild_id;
-    const snowflake & message_id;
-    const snowflake & member_id;
-    const snowflake & guild_owner_id;
+    const aegis::snowflake & channel_id;
+    const aegis::snowflake & guild_id;
+    const aegis::snowflake & message_id;
+    const aegis::snowflake & member_id;
+    const aegis::snowflake & guild_owner_id;
 
     std::string_view username;
 
-    member & _member;
-    channel & _channel;
-    guild & _guild;
+    aegis::member & _member;
+    aegis::channel & _channel;
+    aegis::guild & _guild;
     std::string_view content;
     Guild & g_data;
     std::vector<std::string_view> & toks;
@@ -103,16 +105,12 @@ public:
 
 //         if ((msg == "GUILD_MEMBERS_CHUNK") && (msg != "GUIILD_CREATE") && (msg != "GUIILD_UPDATE"))
 //             bot.log->debug("message_end : {} dura: {}ms", msg, uint64_t(us/1000));
+        auto & e = counters._msg[msg];
+        e.count++;
+        e.time += us;
+        counters.events++;
         statsd.Metric<cppdogstatsd::Timer>("msg_time", us, 1, { "cmd:" + msg });
         statsd.Metric<cppdogstatsd::Count>("command", 1, 1, { "cmd:" + msg });
-    }
-
-    void call_end(std::chrono::steady_clock::time_point start_time)
-    {
-        auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_time).count();
-//         bot.log->debug("call_end : dura: {}us", us);
-
-        statsd.Metric<cppdogstatsd::Timer>("rest_time", us, 1);
     }
 
     void js_end(std::chrono::steady_clock::time_point start_time, const std::string & msg)
@@ -120,6 +118,9 @@ public:
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_time).count();
 //         if (msg != "PRESENCE_UPDATE" && msg != "TYPING_START")
 //             bot.log->debug("js_end : {} dura: {}us", msg, us);
+        auto & e = counters._js[msg];
+        e.count++;
+        e.time += us;
         statsd.Metric<cppdogstatsd::Timer>("js_time", std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_time).count(), 1, { "cmd:" + msg });
     }
 
@@ -134,11 +135,12 @@ public:
     std::vector<std::string_view> tokenize(const std::string_view s, const std::string & delim, std::vector<std::string> groups = {}, bool inclusive = false);
     std::string tokenize_one(const std::string s, char delim, uint32_t & ctx, std::vector<std::string> groups = {}, bool inclusive = false);
     void redis_cmd(const std::vector<char> &buf);
+    void load_config();
 
-    const snowflake bot_owner_id = 171000788183678976LL;
-    const snowflake bug_report_channel_id = 382210262964502549LL;
-    const snowflake bot_guild_id = 287048029524066334LL;
-    const snowflake bot_control_channel = 288707540844412928LL;
+    const aegis::snowflake bot_owner_id = 171000788183678976LL;
+    const aegis::snowflake bug_report_channel_id = 382210262964502549LL;
+    const aegis::snowflake bot_guild_id = 287048029524066334LL;
+    const aegis::snowflake bot_control_channel = 288707540844412928LL;
 
     redisclient::RedisSyncClient redis;
     //redisclient::RedisAsyncClient redis_logger;
@@ -150,6 +152,7 @@ public:
     std::string password;
     aegis::core & bot;
     bool voice_debug = false;
+    bool is_production = true;
 
     std::string format_bytes(uint64_t size)
     {
@@ -168,23 +171,7 @@ public:
         return fmt::format("{} B", size);
     }
 
-    void asdf()
-    {
-        //, typename E
-        //asio::bind_executor();
-        asio::io_context::strand a = strand;
-    }
-
-    void do_log(std::string msg)
-    {
-        asdf();
-        bot.log->debug(msg);
-        asio::post(_io_service, asio::bind_executor(strand, [msg, this]()
-        {
-            std::lock_guard<std::mutex> lock(r_mutex);
-            redis.command("PUBLISH", { "aegis:log", msg });
-        }));
-    }
+    void do_log(std::string msg);
 
     void do_peek(std::string msg)
     {
@@ -195,11 +182,13 @@ public:
         }));
     }
 
+    bool create_message(aegis::channel & _channel, const std::string & str, bool _override = false) noexcept;
+
     asio::io_context & _io_service;
 
-    std::string_view r_config = "config:guild";
-    std::string_view r_m_config = "config:member";
-    std::string_view r_bot_config = "config";
+    const std::string r_config = "config:guild";
+    const std::string r_m_config = "config:member";
+    const std::string r_bot_config = "config";
 
     int64_t checktime = 0;
     int64_t ws_checktime = 0;
@@ -214,6 +203,8 @@ public:
     asio::steady_timer web_log_timer;
     asio::steady_timer status_timer;
     asio::steady_timer maint_timer;
+
+    std::shared_ptr<spdlog::logger> log;
 
     void maint();
 
@@ -232,15 +223,15 @@ public:
 
     std::unordered_map<modules, s_module_data> bot_modules;
 
-    std::set<snowflake> peeks;
+    std::set<aegis::snowflake> peeks;
 
-    bool has_perms(Guild & g_data, member & _member, guild & _guild, std::string cmd);
+    bool has_perms(Guild & g_data, aegis::member & _member, aegis::guild & _guild, std::string cmd);
 
     bool module_enabled(modules mod) const noexcept;
 
     bool module_enabled(Guild & g_data, modules mod) const noexcept;
 
-    Guild & get_guild(snowflake id);
+    Guild & get_guild(aegis::snowflake id);
 
     asio::io_context::strand strand;
 
@@ -250,9 +241,31 @@ public:
 
     std::unordered_map<std::string, uint16_t> command_counters;
 
+    struct event_data
+    {
+        uint32_t time;
+        uint32_t count;
+    };
+
+    struct
+    {
+
+        std::atomic_uint32_t dms = 0;
+        std::atomic_uint32_t messages = 0;
+        std::atomic_uint32_t presences = 0;
+        std::atomic_uint32_t rest_time = 0;
+        std::atomic_uint32_t _rest = 0;
+        std::atomic_uint32_t events = 0;
+
+        std::map<std::string, event_data> _js;
+        std::map<std::string, event_data> _msg;
+
+        //uint32_t 
+    } counters;
+
     std::unordered_map<uint16_t, uint32_t> http_codes;
 
-    std::set<snowflake> ignored;
+    std::set<aegis::snowflake> ignored;
 
     std::unordered_map<std::string, s_tag_data> tag_list;
 
@@ -324,9 +337,11 @@ public:
 
     std::shared_mutex m_message;
 
-    std::unordered_map<snowflake, aegis::gateway::objects::message> message_history;
+    std::unordered_map<aegis::snowflake, aegis::gateway::objects::message> message_history;
 
-    std::unordered_map<snowflake, snowflake> dm_channels;
+    std::unordered_map<aegis::snowflake, aegis::snowflake> dm_channels;
+
+    void event_log(const json & j, const std::string & path);
 
     std::string get_module_name(modules m)
     {
@@ -337,11 +352,11 @@ public:
 
     bool valid_command(std::string_view cmd);
 
-    bool command_enabled(snowflake guild_id, std::string cmd);
+    bool command_enabled(aegis::snowflake guild_id, std::string cmd);
 
     bool command_enabled(Guild & g_data, std::string cmd);
 
-    bool toggle_command(std::string_view cmd, snowflake guild_id, bool enabled)
+    bool toggle_command(std::string_view cmd, aegis::snowflake guild_id, bool enabled)
     {
         std::string c;
         std::transform(cmd.begin(), cmd.end(), c.begin(), [](const unsigned char c) { return std::tolower(c); });
@@ -350,12 +365,27 @@ public:
         return false;
     }
 
+    enum mention_type
+    {
+        Fail,
+        User,
+        Nickname,
+        Channel,
+        Role,
+        Emoji,
+        AnimatedEmoji
+    };
+
     int32_t is_mention(const std::string_view str) const noexcept
     {
-        if (str[0] == '<')
+        if ((str.front() == '<') &&  (str.back() == '>'))
         {
             //redis commands
             std::string res;
+            if ((str[1] == '@') && (str[2] == '!'))
+            {
+
+            }
             if ((str[1] == '@') || (str[1] == '#'))
             {
 
@@ -363,54 +393,9 @@ public:
         }
     }
 
-    snowflake get_snowflake(const std::string_view name, guild & _guild) const noexcept
-    {
-        if (name.empty())
-            return { 0 };
-        try
-        {
-            if (name[0] == '<')
-            {
-                //mention param
+    aegis::snowflake get_snowflake(const std::string_view name, aegis::guild & _guild) const noexcept;
 
-                std::string::size_type pos = name.find_first_of('>');
-                if (pos == std::string::npos)
-                    return { 0 };
-                if (name[2] == '!')//mobile mention. strip <@!
-                    return std::stoull(std::string{ name.substr(3, pos - 1) });
-                else  if (name[2] == '&')//role mention. strip <@&
-                    return std::stoull(std::string{ name.substr(3, pos - 1) });
-                else  if (name[1] == '#')//channel mention. strip <#
-                    return std::stoull(std::string{ name.substr(2, pos - 1) });
-                else//regular mention. strip <@
-                    return std::stoull(std::string{ name.substr(2, pos - 1) });
-            }
-            else if (std::isdigit(name[0]))
-            {
-                //snowflake param
-                return std::stoull(std::string{ name });
-            }
-            else
-            {
-                //most likely username#discriminator param
-                std::string::size_type n = name.find('#');
-                if (n != std::string::npos)
-                {
-                    //found # separator
-                    std::shared_lock<std::shared_mutex> l(_guild.mtx());
-                    for (auto & m : _guild.get_members())
-                        if (m.second->get_full_name() == name)
-                            return { m.second->get_id() };
-                    return { 0 };
-                }
-                return { 0 };//# not found. unknown parameter. unicode may trigger this.
-            }
-        }
-        catch (std::invalid_argument &)
-        {
-            return { 0 };
-        }
-    }
+    std::tuple<mention_type, aegis::snowflake> analyze_mention(std::string_view str) const noexcept;
 
     /// Automatically reference key [config:guild:{guild_id}:{key}]
     bool hset(const std::string_view key, std::vector<std::string> value, Guild & g_data);
@@ -611,160 +596,27 @@ public:
         return basic_action("SREM", value);
     }
 
-    bool basic_action(const std::string_view action, const std::vector<std::string> & value)
-    {
-        asio::post(_io_service, asio::bind_executor(strand, [this, action = std::string{ action }, value = std::move(value)]()
-        {
-            try
-            {
-                std::lock_guard<std::mutex> lock(r_mutex);
-                redisclient::RedisValue result;
-                std::deque<redisclient::RedisBuffer> v;
-                for (auto & k : value)
-                    v.emplace_back(k.data());
-                result = redis.command(std::string{ action }, v);
-            }
-            catch (std::exception & e)
-            {
-                bot.log->error("E: {}", e.what());
-            }
-        }));
-        return true;
-    }
+    bool sadd(const std::string_view key, const std::vector<std::string> & value, Guild & g_data);
 
-    std::string result_action(const std::string_view action, const std::vector<std::string> & value)
-    {
-        std::lock_guard<std::mutex> lock(r_mutex);
-        try
-        {
-            redisclient::RedisValue result;
-            std::deque<redisclient::RedisBuffer> v;
-            for (auto & k : value)
-                v.emplace_back(k.data());
-            result = redis.command(std::string{ action }, v);
-            if (result.isOk())
-                return result.toString();
-            else if (result.isError())
-            {
-                std::stringstream ss;
-                for (const auto & a : value)
-                    ss << a << ' ';
-                throw aegis::exception(fmt::format("result_action({}) failure: {} || {}", action, result.toString(), ss.str()), aegis::make_error_code(aegis::error::bad_redis_request));
-            }
-            throw aegis::exception(fmt::format("result_action({}) failure (no error, no ok)", action), aegis::make_error_code(aegis::error::bad_redis_request));
-        }
-        catch (std::exception & e)
-        {
-            //reconstruct query
-            fmt::MemoryWriter w;
-            w << action;
-            for (auto & v : value)
-                w << ' ' << v;
-            bot.log->error("E: {} || {}", e.what(), w.str());
-        }
-        return {};
-    }
+    bool srem(const std::string_view key, const std::vector<std::string> & value, Guild & g_data);
+
+    bool basic_action(const std::string_view action, const std::vector<std::string> & value);
+
+    std::string result_action(const std::string_view action, const std::vector<std::string> & value);
 
     /// Specify key separately
-    bool basic_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
-    {
-        asio::post(_io_service, asio::bind_executor(strand, [this, key = std::string{ key }, action = std::string{ action }, value = std::move(value)]()
-        {
-            std::lock_guard<std::mutex> lock(r_mutex);
-            try
-            {
-                redisclient::RedisValue result;
-                std::deque<redisclient::RedisBuffer> v;
-                v.emplace_back(key.data());
-                for (auto & k : value)
-                    v.emplace_back(k.data());
-                result = redis.command(std::string{ action }, v);
-                if (result.isOk())
-                    return;
-                else if (result.isError())
-                {
-                    std::stringstream ss;
-                    ss << key << ' ';
-                    for (const auto & a : value)
-                        ss << a << ' ';
-                    throw aegis::exception(fmt::format("basic_action({}) failure: {} || {}", action, result.toString(), ss.str()), aegis::make_error_code(aegis::error::bad_redis_request));
-                }
-                throw aegis::exception(fmt::format("result_action({}) failure (no error, no ok)", action), aegis::make_error_code(aegis::error::bad_redis_request));
-            }
-            catch (std::exception & e)
-            {
-                bot.log->error("E: {}", e.what());
-            }
-        }));
-        return true;
-    }
+    bool basic_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value);
 
     /// Specify key separately
-    std::string result_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
-    {
-        std::lock_guard<std::mutex> lock(r_mutex);
-        try
-        {
-            redisclient::RedisValue result;
-            std::deque<redisclient::RedisBuffer> v;
-            v.emplace_back(key.data());
-            for (auto & k : value)
-                v.emplace_back(k.data());
-            result = redis.command(std::string{ action }, v);
-            if (result.isOk())
-                return result.toString();
-            else if (result.isError())
-            {
-                std::stringstream ss;
-                ss << key << ' ';
-                for (const auto & a : value)
-                    ss << a << ' ';
-                throw aegis::exception(fmt::format("result_action({}) failure: {} || {}", action, result.toString(), ss.str()), aegis::make_error_code(aegis::error::bad_redis_request));
-            }
-            throw aegis::exception(fmt::format("result_action({}) failure (no error, no ok)", action), aegis::make_error_code(aegis::error::bad_redis_request));
-        }
-        catch (std::exception & e)
-        {
-            //reconstruct query
-            fmt::MemoryWriter w;
-            w << action;
-            for (auto & v : value)
-                w << ' ' << v;
-            bot.log->error("E: {} || {}", e.what(), w.str());
-        }
-        return {};
-    }
+    std::string result_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value);
 
-    std::future<std::string> async_get_result(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
-    {
-        using result = asio::async_result<asio::use_future_t<>, void(std::string)>;
-        using handler = typename result::completion_handler_type;
+    std::future<std::string> async_get_result(const std::string_view action, const std::string_view key, const std::vector<std::string> & value);
 
-        handler exec(asio::use_future);
-        result ret(exec);
+    std::future<aegis::rest::rest_reply> req_success(aegis::gateway::objects::message & msg);
 
-        asio::post(_io_service, asio::bind_executor(strand, [exec, this, action = std::string{ action }, key = std::string{ key }, value]() mutable
-        {
-            exec(result_action(action, key, value));
-        }));
+    std::future<aegis::rest::rest_reply> req_fail(aegis::gateway::objects::message & msg);
 
-        return ret.get();
-    }
-
-    std::future<aegis::rest::rest_reply> req_success(aegis::gateway::objects::message & msg)
-    {
-        return msg.create_reaction("success:429554838083207169");
-    }
-
-    std::future<aegis::rest::rest_reply> req_fail(aegis::gateway::objects::message & msg)
-    {
-        return msg.create_reaction("fail:429554869611921408");
-    }
-
-    std::future<aegis::rest::rest_reply> req_permission(aegis::gateway::objects::message & msg)
-    {
-        return msg.create_reaction("no_permission:451495171779985438");
-    }
+    std::future<aegis::rest::rest_reply> req_permission(aegis::gateway::objects::message & msg);
 
     const bool to_int64(const std::string & s) const noexcept
     {
@@ -790,7 +642,7 @@ public:
 
     void toggle_mod_override(Guild & g_data, const modules mod, const bool toggle);
 
-    void load_guild(snowflake guild_id, Guild & g_data);
+    void load_guild(aegis::snowflake guild_id, Guild & g_data);
 
     //extensions
     bool process_admin_messages(aegis::gateway::events::message_create & obj, shared_data & sd);
@@ -862,31 +714,48 @@ public:
         return out;
     }
 
-    template<typename E, typename T, typename V = std::result_of_t<T()>/*, typename std::enable_if_t<!std::is_void<std::result_of_t<T()>>::value> = 0*/>
-    aegis::future<V> async(E ex, T f)
-    {
-        aegis::promise<V> pr;
-        auto fut = pr.get_future();
+    std::map<std::string, std::function<std::string(shared_data & sd)>> admin_replacements;
+    std::map<std::string, std::function<std::string(shared_data & sd)>> advanced_replacements;
+    std::map<std::string, std::function<std::string(shared_data & sd)>> replacements;
 
-        asio::post(_io_service, asio::bind_executor(*ex, [pr = std::move(pr), f = std::move(f)]() mutable
+    std::string replace_str(const std::string & needle, const std::string & repl, const std::string & haystack)
+    {
+        std::string temp_res = "";
+        std::string::size_type n = haystack.find(needle, 0);
+        if (n != std::string::npos)
         {
-            pr.set_value(f());
-        }));
-        return fut;
+            temp_res.resize(haystack.size() + repl.size() + needle.size() * 2, 0);
+            std::copy_n(haystack.begin(), n, temp_res.data());
+            std::copy_n(repl.begin(), repl.size(), temp_res.data() + n);
+            std::copy_n(
+                haystack.begin() + n + needle.size(),
+                haystack.size() - n - needle.size(),
+                temp_res.data() + n + repl.size());
+            temp_res[haystack.size() - needle.size() + repl.size()] = 0;
+            temp_res.resize(haystack.size() - needle.size() + repl.size());
+            return std::move(temp_res);
+        }
+        return haystack;
     }
 
-    template<typename E, typename T>
-    aegis::future<void> async(E ex, T f)
+    std::string admin_string_replace(const std::string & s, shared_data & sd)
     {
-        aegis::promise<void> pr;
-        auto fut = pr.get_future();
-
-        asio::post(_io_service, asio::bind_executor(*ex, [pr = std::move(pr), f = std::move(f)]() mutable
+        std::string temp = s;
+        for (const auto &[k, v] : admin_replacements)
         {
-            f();
-            pr.set_value();
-        }));
-        return fut;
+            temp = replace_str(k, v(sd), temp);
+        }
+        return std::move(temp);
+    }
+
+    std::string string_replace(const std::string & s, shared_data & sd)
+    {
+        std::string temp = s;
+        for (const auto &[k, v] : replacements)
+        {
+            temp = replace_str(k, v(sd), temp);
+        }
+        return std::move(temp);
     }
 
     // All the hooks into the websocket stream
