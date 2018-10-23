@@ -38,13 +38,13 @@ AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
     log = spdlog::get("aegis");
     load_config();
 
-    stats_timer.expires_after(std::chrono::seconds(60));
+    stats_timer.expires_after(std::chrono::seconds(5));
     stats_timer.async_wait(std::bind(&AegisBot::push_stats, this));
 
-    status_timer.expires_after(std::chrono::seconds(30));
+    status_timer.expires_after(std::chrono::seconds(5));
     status_timer.async_wait(std::bind(&AegisBot::update_statuses, this));
 
-    maint_timer.expires_after(std::chrono::seconds(30));
+    maint_timer.expires_after(std::chrono::seconds(5));
     maint_timer.async_wait(std::bind(&AegisBot::maint, this));
 
     web_stats_timer.expires_after(std::chrono::milliseconds(250));
@@ -290,27 +290,14 @@ void AegisBot::push_stats()
     try
     {
         aegis::rest::request_params rp;
-        rp.host = "165.227.115.46";
-        rp.port = "9998";
+        rp.host = logging_address;
+        rp.port = logging_port;
         if (is_production)
             rp.path = "/bot";
         else
             rp.path = "/test/bot";
 
         json m;
-
-//         json j;
-//         for (const auto & s : bot.get_shard_mgr().get_shards())
-//         {
-//             json js;
-//             js["id"] = s->get_id();
-//             js["seq"] = s->get_sequence();
-//             j.push_back(js);
-//         }
-// 
-//         rp.body = "";
-//         bot.call();
-
 
         {
             for (auto & c : command_counters)
@@ -343,6 +330,7 @@ void AegisBot::push_stats()
             j["rest_time"] = counters.rest_time.fetch_and(0);
             j["rest"] = counters._rest.fetch_and(0);
             j["events"] = counters.events.fetch_and(0);
+            j["commands"] = counters.commands.fetch_and(0);
 
             m.push_back(j);
         }
@@ -352,8 +340,8 @@ void AegisBot::push_stats()
 
         {
             aegis::rest::request_params rp;
-            rp.host = "165.227.115.46";
-            rp.port = "9998";
+            rp.host = logging_address;
+            rp.port = logging_port;
             if (is_production)
                 rp.path = "/cmds";
             else
@@ -498,7 +486,11 @@ void AegisBot::load_config()
         auto cfg_bot = cfg["bot"];
         if (!cfg_bot["production"].is_null())
             is_production = cfg_bot["production"];
-        
+        if (!cfg_bot["logging-address"].is_null())
+            logging_address = cfg_bot["logging-address"].get<std::string>();
+        if (!cfg_bot["logging-port"].is_null())
+            logging_port = cfg_bot["logging-port"].get<std::string>();
+
     }
 }
 
@@ -1357,6 +1349,7 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
                                    _channel.get_name(), _member.get_full_name(),
                                    obj.msg.get_content()));
                 ++command_counters[lowercommand];
+                ++counters.commands;
                 return;
             }
         }
@@ -2156,8 +2149,8 @@ bool AegisBot::basic_action(const std::string_view action, const std::vector<std
 void AegisBot::event_log(const json & j, const std::string & path)
 {
     aegis::rest::request_params rp;
-    rp.host = "165.227.115.46";
-    rp.port = "9998";
+    rp.host = logging_address;
+    rp.port = logging_port;
     if (is_production)
         rp.path = path;
     else

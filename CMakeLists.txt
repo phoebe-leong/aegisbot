@@ -5,6 +5,8 @@ find_package(PkgConfig)
 
 find_package(Aegis REQUIRED)
 
+add_compile_options("-O3")
+
 add_executable(aegisbot
 src/main.cpp
 src/AegisBot.cpp

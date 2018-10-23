@@ -153,23 +153,8 @@ public:
     aegis::core & bot;
     bool voice_debug = false;
     bool is_production = true;
-
-    std::string format_bytes(uint64_t size)
-    {
-        if ((size > 1024ull * 5) && (size < 1024ull * 1024 * 5))// over 5KB and up to 5MB show KB
-        {
-            return fmt::format("{:.3f} KB", double(size) / 1024);
-        }
-        if ((size > 1024ull * 1024 * 5) && (size < 1024ull * 1024 * 1024 * 5))// over 5MB and up to 5GB show MB
-        {
-            return fmt::format("{:.3f} MB", (double(size) / 1024) / 1024);
-        }
-        if (size > 1024ull * 1024 * 1024 * 5)// over 5GB show GB
-        {
-            return fmt::format("{:.3f} GB", ((double(size) / 1024) / 1024) / 1024);
-        }
-        return fmt::format("{} B", size);
-    }
+    std::string logging_address;
+    std::string logging_port;
 
     void do_log(std::string msg);
 
@@ -256,6 +241,7 @@ public:
         std::atomic_uint32_t rest_time = 0;
         std::atomic_uint32_t _rest = 0;
         std::atomic_uint32_t events = 0;
+        std::atomic_uint32_t commands = 0;
 
         std::map<std::string, event_data> _js;
         std::map<std::string, event_data> _msg;
