@@ -5,7 +5,7 @@ find_package(PkgConfig)
 
 find_package(Aegis REQUIRED)
 
-add_compile_options("-O3")
+add_compile_options("-O2")
 
 add_executable(aegisbot
 src/main.cpp
@@ -26,8 +26,6 @@ src/UserControl.cpp)
 
 set_target_properties(aegisbot PROPERTIES CXX_STANDARD 17)
 set_target_properties(aegisbot PROPERTIES CXX_STANDARD_REQUIRED ON)
-
-target_compile_definitions(aegisbot PRIVATE AEGIS_PROFILING AEGIS_DEBUG_HISTORY)
 
 target_link_libraries(aegisbot PRIVATE ${Aegis_LIBRARIES})
 target_include_directories(aegisbot PUBLIC ${CMAKE_SOURCE_DIR}/src ${Aegis_INCLUDE_DIRS})

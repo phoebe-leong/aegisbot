@@ -2,7 +2,7 @@
 // mod_auction.cpp
 // ***************
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -12,11 +12,12 @@
 #include "Guild.h"
 #include <aegis/channel.hpp>
 #include <nlohmann/json.hpp>
-#include <aegis/member.hpp>
+#include <aegis/user.hpp>
+#include <aegis/guild.hpp>
 //#include <aegis/core.hpp>
 
 using aegis::snowflake;
-using aegis::member;
+using aegis::user;
 using aegis::channel;
 using aegis::guild;
 
@@ -248,7 +249,7 @@ bool mod_auction::check_command(std::string cmd, shared_data & sd)
     if (it == commands.end())
         return false;
 
-    if (paused && !sd._guild.member_has_role(sd.member_id, hostrole))
+    if (paused && !sd.guild.member_has_role(sd.member_id, hostrole))
         return false;
 
     return it->second(sd);
@@ -264,9 +265,9 @@ bool mod_auction::reset(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -302,9 +303,9 @@ bool mod_auction::teamlist(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -337,9 +338,9 @@ bool mod_auction::_register(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -396,9 +397,9 @@ bool mod_auction::state(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -448,9 +449,9 @@ bool mod_auction::set(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -540,9 +541,9 @@ bool mod_auction::start(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -582,9 +583,9 @@ bool mod_auction::playerlist(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -628,12 +629,12 @@ bool mod_auction::playerlist(shared_data & sd)
     { "footer",{ { "icon_url", "https://cdn.discordapp.com/emojis/289276304564420608.png" },{ "text", "Auction bot" } } }
     };
     auto apireply = _channel.create_message_embed("", t).get();
-    sd.ab.log->info("API REPLY {} : {} : {} : {}", apireply.reply_code, apireply.remaining, apireply.reset, apireply.retry);
-    if (!apireply)
-    {
-        //success
-        sd.ab.log->info("SUCCESS");
-    }
+//     sd.ab.log->info("API REPLY {} : {} : {} : {}", apireply.reply_code, apireply.remaining, apireply.reset, apireply.retry);
+//     if (!apireply)
+//     {
+//         //success
+//         sd.ab.log->info("SUCCESS");
+//     }
     return true;
 }
 
@@ -647,9 +648,9 @@ bool mod_auction::addplayers(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -701,9 +702,9 @@ bool mod_auction::nom(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -794,9 +795,9 @@ bool mod_auction::pause(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -839,9 +840,9 @@ bool mod_auction::resume(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -884,9 +885,9 @@ bool mod_auction::bid(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -982,9 +983,9 @@ bool mod_auction::end(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1040,9 +1041,9 @@ bool mod_auction::setname(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1087,9 +1088,9 @@ bool mod_auction::standings(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1133,9 +1134,9 @@ bool mod_auction::retain(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1197,9 +1198,9 @@ bool mod_auction::skip(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1301,9 +1302,9 @@ bool mod_auction::setfunds(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1366,9 +1367,9 @@ bool mod_auction::undobid(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1413,9 +1414,9 @@ bool mod_auction::auctionhelp(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1450,9 +1451,9 @@ bool mod_auction::undobuy(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1514,9 +1515,9 @@ bool mod_auction::withdraw(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1602,9 +1603,9 @@ bool mod_auction::addfunds(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1666,9 +1667,9 @@ bool mod_auction::removefunds(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1730,9 +1731,9 @@ bool mod_auction::adminsetname(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1795,9 +1796,9 @@ bool mod_auction::addbidder(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -1872,9 +1873,9 @@ bool mod_auction::delbidder(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;

@@ -2,7 +2,7 @@
 // mod_tag.cpp
 // ***********
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -102,9 +102,9 @@ bool mod_perms::perms(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    aegis::member & _member = sd._member;
-    aegis::channel & _channel = sd._channel;
-    aegis::guild & _guild = sd._guild;
+    aegis::user & _member = sd.user;
+    aegis::channel & _channel = sd.channel;
+    aegis::guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;

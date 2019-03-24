@@ -2,7 +2,7 @@
 // Guild.h
 // *******
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -22,6 +22,8 @@
 #include "mod_tag.h"
 #include "mod_moderation.h"
 #include "mod_announcer.h"
+#include "mod_bansync.h"
+#include "mod_globalbanlist.h"
 //#include "mod_perms.h"
 
 struct s_command_data
@@ -57,6 +59,8 @@ enum modules
     Log = 8,
     Automod = 9,
     Timer = 10,
+    Bansync = 11,
+    Globalbanlist = 12,
     MAX_MODULES
 };
 
@@ -71,9 +75,13 @@ struct s_rank
 class Guild
 {
 public:
-    Guild() = default;
+	Guild(AegisBot& bot)
+		: bot(bot)
+	{
+	}
     ~Guild() = default;
 
+	AegisBot& bot;
     aegis::snowflake guild_id;
     bool loaded = false;
     std::vector<std::string> cmd_prefix_list;
@@ -89,6 +97,12 @@ public:
     std::unordered_map<modules, Module*> _modules;
     std::unordered_map<int64_t, s_rank> ranks;
     std::vector<aegis::snowflake> ignored_channels;
+    aegis::snowflake log_channel;
+    aegis::snowflake default_channel;
 
     bool is_channel_ignored(aegis::snowflake channel_id);
+
+	bool send_message_default(std::string msg);
+
+	aegis::channel* get_default_channel();
 };

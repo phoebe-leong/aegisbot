@@ -1,6 +1,6 @@
 //
-// mod_announcer.h
-// ***************
+// mod_globalbanlist.h
+// *******************
 //
 // Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
@@ -13,11 +13,11 @@
 
 class Guild;
 
-class mod_announcer : public Module
+class mod_globalbanlist : public Module
 {
 public:
-    mod_announcer(Guild&, asio::io_context&);
-    virtual ~mod_announcer();
+    mod_globalbanlist(Guild&, asio::io_context&);
+    ~mod_globalbanlist();
 
     std::vector<std::string> get_db_entries() override;
 

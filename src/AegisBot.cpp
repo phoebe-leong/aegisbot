@@ -2,7 +2,7 @@
 // AegisBot.cpp
 // ************
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -16,12 +16,12 @@
 
 using namespace cppdogstatsd;
 
-AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
+AegisBot::AegisBot(asio::io_context & _io)
     : redis(_io)
     , redis_commands(_io)
     , redis_logger(_io)
     , memory_stats(_io)
-    , bot(bot)
+    , _bot(nullptr)
     , _io_service(_io)
 // #ifdef WIN32
 //     , statsd(_io, "aegisdbg", "165.227.115.46")
@@ -33,54 +33,41 @@ AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
     , web_log_timer(_io)
     , status_timer(_io)
     , maint_timer(_io)
-    , strand(_io)
+	, umod_timer(_io)
+    , message_collection_timer(_io)
+	, strand(_io)
 {
     log = spdlog::get("aegis");
     load_config();
 
-    stats_timer.expires_after(std::chrono::seconds(5));
-    stats_timer.async_wait(std::bind(&AegisBot::push_stats, this));
-
-    status_timer.expires_after(std::chrono::seconds(5));
-    status_timer.async_wait(std::bind(&AegisBot::update_statuses, this));
-
-    maint_timer.expires_after(std::chrono::seconds(5));
-    maint_timer.async_wait(std::bind(&AegisBot::maint, this));
-
-    web_stats_timer.expires_after(std::chrono::milliseconds(250));
-    web_stats_timer.async_wait(std::bind(&AegisBot::update_stats, this));
-
-    web_log_timer.expires_after(std::chrono::seconds(5));
-    web_log_timer.async_wait(std::bind(&AegisBot::web_log, this));
-
     admin_replacements.emplace("$token", [&](shared_data & sd)
     {
-        return sd.ab.bot.get_token();
+        return sd.ab._bot->get_token();
     });
 
     admin_replacements.emplace("$shardid", [&](shared_data & sd)
     {
-        return std::to_string(sd.msg._shard->get_id());
+        return std::to_string(sd.msg.shard.get_id());
     });
 
     admin_replacements.emplace("$shardseq", [&](shared_data & sd)
     {
-        return std::to_string(sd.msg._shard->get_sequence());
+        return std::to_string(sd.msg.shard.get_sequence());
     });
 
     admin_replacements.emplace("$shardtransfer", [&](shared_data & sd)
     {
-        return sd.msg._shard->get_transfer_str();
+        return sd.msg.shard.get_transfer_str();
     });
 
     admin_replacements.emplace("$sharduptime", [&](shared_data & sd)
     {
-        return sd.msg._shard->uptime_str();
+        return sd.msg.shard.uptime_str();
     });
 
     admin_replacements.emplace("$uptime", [&](shared_data & sd)
     {
-        return sd.ab.bot.uptime_str();
+        return sd.ab._bot->uptime_str();
     });
 
     replacements.emplace("$username", [&](shared_data & sd)
@@ -100,7 +87,7 @@ AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
 
     replacements.emplace("$channelname", [&](shared_data & sd)
     {
-        return sd._channel.get_name();
+        return sd.channel.get_name();
     });
 
     replacements.emplace("$guildid", [&](shared_data & sd)
@@ -110,21 +97,7 @@ AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
 
     replacements.emplace("$guildname", [&](shared_data & sd)
     {
-        return sd._guild.get_name();
-    });
-
-//     bot.set_on_shard_connect([&](aegis::shards::shard * _shard)
-//     {
-//         json j;
-//         j["shard:connects"] = 1;
-//         event_log(j, "/shards");
-//     });
-
-    bot.set_on_shard_disconnect([&](aegis::shards::shard * _shard)
-    {
-        json j;
-        j["shard:disconnects"] = 1;
-        event_log(j, "/shards");
+        return sd.guild.get_name();
     });
 
 //     advanced_replacements.emplace("@user", [&](shared_data & sd)
@@ -146,9 +119,71 @@ AegisBot::AegisBot(asio::io_context & _io, aegis::core & bot)
 //     memory_stats.async_wait(std::bind(&AegisBot::send_memory_stats, this));
 }
 
+void AegisBot::start_timers()
+{
+    stats_timer.expires_after(std::chrono::seconds(5));
+    stats_timer.async_wait(std::bind(&AegisBot::push_stats, this));
+
+    status_timer.expires_after(std::chrono::seconds(5));
+    status_timer.async_wait(std::bind(&AegisBot::update_statuses, this));
+
+    maint_timer.expires_after(std::chrono::seconds(5));
+    maint_timer.async_wait(std::bind(&AegisBot::maint, this));
+
+    web_stats_timer.expires_after(std::chrono::milliseconds(250));
+    web_stats_timer.async_wait(std::bind(&AegisBot::update_stats, this));
+
+    web_log_timer.expires_after(std::chrono::seconds(5));
+    web_log_timer.async_wait(std::bind(&AegisBot::web_log, this));
+
+// #if !defined(DEBUG) && !defined(WIN32)
+// 	umod_timer.expires_after(std::chrono::seconds(5));
+// 	umod_timer.async_wait(std::bind(&AegisBot::umod, this));
+// #endif
+
+//     message_collection_timer.expires_after(std::chrono::seconds(10));
+//     message_collection_timer.async_wait(std::bind(&AegisBot::message_collect, this));
+// 
+//     std::string t = cdata_get("collection_last_message");
+//     if (t.empty())
+//         collection_last_message = 381870565658460170;
+//     else
+//         collection_last_message = std::stoll(t);
+}
+
+void AegisBot::message_collect()
+{
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
+
+    message_collection_timer.expires_after(std::chrono::seconds(5));
+
+    try
+    {
+        //https://discordapp.com/api/channels/381870553235193857/messages?limit=100&after=381870565658460170
+        aegis::rest::request_params rp;
+        rp.method = aegis::rest::Get;
+        rp.path = fmt::format("/api/channels/381870553235193857/messages?limit=100&after={}", collection_last_message);
+        aegis::rest::rest_reply ret = _bot->get_rest_controller().execute(std::forward<aegis::rest::request_params>(rp));
+        json response = json::parse(ret.content);
+
+        log->info(ret.content);
+
+
+    }
+    catch (...)
+    {
+    }
+
+    message_collection_timer.async_wait(std::bind(&AegisBot::message_collect, this));
+}
+
 void AegisBot::maint()
 {
-    try
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
+	maint_timer.expires_after(std::chrono::seconds(30));
+	try
     {
         std::unique_lock<std::shared_mutex> l(m_message);
         auto timenow = std::chrono::system_clock::now();
@@ -166,19 +201,87 @@ void AegisBot::maint()
     catch (...)
     {
     }
-    maint_timer.expires_after(std::chrono::seconds(30));
     maint_timer.async_wait(std::bind(&AegisBot::maint, this));
+}
+
+void AegisBot::umod()
+{
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
+
+    umod_timer.expires_after(std::chrono::seconds(60));
+
+    try
+    {
+        aegis::rest::request_params rp;
+        rp.host = "umod.org";
+        rp.method = aegis::rest::Get;
+        rp.path = "/plugins/search.json?query=&page=1&sort=latest_release_at&sortdir=desc&filter=";
+        aegis::rest::rest_reply ret = _bot->get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+        json response = json::parse(ret.content);
+
+        for (const auto& j : response["data"])
+        {
+            std::string ts = cdata_get(j["name"]);
+            if (ts == j["latest_release_at"])
+                continue;
+            cdata_set(j["name"], j["latest_release_at"]);
+            using field = aegis::gateway::objects::field;
+            using embed = aegis::gateway::objects::embed;
+            using thumbnail = aegis::gateway::objects::thumbnail;
+            using footer = aegis::gateway::objects::footer;
+            std::string iconurl;
+            if (!j["icon_url"].is_null())
+                iconurl = j["icon_url"];
+            else if (!j["author_icon_url"].is_null())
+                iconurl = j["author_icon_url"];
+            else if (!j["games_detail"]["icon_url"].is_null())
+                iconurl = j["games_detail"]["icon_url"];
+
+            embed e = embed().color(2920429)
+                .title("**Plugin Added/Updated!**")
+                .fields({
+                            field("Plugin:", fmt::format("**[{}]({})**", j["name"].get<std::string>(), j["url"].get<std::string>())).is_inline(true),
+                            field("Version:", fmt::format("**{}**", j["latest_release_version"].get<std::string>())).is_inline(true),
+                            field("Description:", fmt::format("```\n{}\n```", j["description"].get<std::string>())).is_inline(false)
+                    })
+                .timestamp(j["latest_release_at_atom"])
+                .thumbnail({ iconurl })
+                .footer({ "CodeXive.org" });
+
+            for (const auto& [k, v] : umod_servers)
+            {
+                aegis::channel* c = _bot->find_channel(v);
+
+                if (!c) continue;
+                c->create_message_embed({}, e);
+            }
+        }
+    }
+    catch (std::exception & e)
+    {
+        do_log(fmt::format("Error in umod : {}", e.what()));
+    }
+    catch (...)
+    {
+        do_log("... Error in umod");
+    }
+
+    umod_timer.async_wait(std::bind(&AegisBot::umod, this));
 }
 
 void AegisBot::web_log()
 {
     // shard history
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
 
-    try
+	web_log_timer.expires_after(std::chrono::seconds(5));
+	try
     {
-        for (uint32_t i = 0; i < bot.shard_max_count; ++i)
+        for (uint32_t i = 0; i < _bot->shard_max_count; ++i)
         {
-            auto & s = bot.get_shard_by_id(i);
+            auto & s = _bot->get_shard_by_id(i);
 
             struct guild_count_data
             {
@@ -186,9 +289,9 @@ void AegisBot::web_log()
                 size_t members;
             };
 
-            std::vector<guild_count_data> shard_guild_c(bot.shard_max_count);
+            std::vector<guild_count_data> shard_guild_c(_bot->shard_max_count);
 
-            for (auto & v : bot.guilds)
+            for (auto & v : _bot->guilds)
             {
                 ++shard_guild_c[v.second->shard_id].guilds;
                 shard_guild_c[v.second->shard_id].members += v.second->get_members().size();
@@ -223,60 +326,45 @@ void AegisBot::web_log()
     {
 
     }
-    web_log_timer.expires_after(std::chrono::seconds(5));
     web_log_timer.async_wait(std::bind(&AegisBot::web_log, this));
 }
 
 void AegisBot::update_statuses()
 {
+    using aegis::gateway::objects::activity;
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
     status_timer.expires_at(std::chrono::steady_clock::now() + std::chrono::seconds(30));
     try
     {
         std::string toset;
-        int type = 0;
+        activity::activity_type type = activity::Game;
 
         switch (rand() % 6)
         {
             case 0:
-                toset = fmt::format("@{} help", bot.self()->get_username());
+                toset = fmt::format("@{} help", _bot->self()->get_username());
                 break;
             case 1:
-                toset = fmt::format("{} users", bot.members.size());
-                type = 3;
+                toset = fmt::format("{} users", _bot->members.size());
+                type = activity::Watching;
                 break;
             case 2:
-                toset = fmt::format("{} servers", bot.guilds.size());
-                type = 3;
+                toset = fmt::format("{} servers", _bot->guilds.size());
+                type = activity::Watching;
                 break;
             case 3:
-                toset = fmt::format("{} Uptime", bot.uptime_str());
+                toset = fmt::format("{} Uptime", _bot->uptime_str());
                 break;
             case 4:
-                toset = fmt::format("{} shards", bot.get_shard_mgr().shard_count());
+                toset = fmt::format("{} shards", _bot->get_shard_mgr().shard_count());
                 break;
             case 5:
                 toset = "Running on C++";
                 break;
         }
 
-        json j = {
-            { "op", 3 },
-            {
-                "d",
-                {
-                    { "game",
-                        {
-                            { "name", toset },
-                            { "type", type }
-                        }
-                    },
-                    { "status", "online" },
-                    { "since", json::value_t::null },
-                    { "afk", false }
-                }
-            }
-        };
-        bot.send_all_shards(j);
+        _bot->update_presence(toset, type, aegis::gateway::objects::presence::Online);
     }
     catch (...)
     {
@@ -286,6 +374,8 @@ void AegisBot::update_statuses()
 
 void AegisBot::push_stats()
 {
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
     stats_timer.expires_at(std::chrono::steady_clock::now() + std::chrono::seconds(10));
     try
     {
@@ -321,8 +411,8 @@ void AegisBot::push_stats()
 
         {
             json j;
-            j["members"] = bot.members.size();
-            j["guilds"] = bot.guilds.size();
+            j["members"] = _bot->members.size();
+            j["guilds"] = _bot->guilds.size();
             j["memory"] = aegis::utility::getCurrentRSS();
             j["dms"] = counters.dms.fetch_and(0);
             j["msgs"] = counters.messages.fetch_and(0);
@@ -336,7 +426,7 @@ void AegisBot::push_stats()
         }
 
         rp.body = m.dump();
-        bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+        _bot->get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
 
         {
             aegis::rest::request_params rp;
@@ -361,17 +451,18 @@ void AegisBot::push_stats()
                 v.count = v.time = 0;
             }
             rp.body = ev.dump();
-            bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+            _bot->get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
         }
 
 
-        statsd.Metric<Gauge>("member", bot.members.size(), 1);
-        statsd.Metric<Gauge>("guilds", bot.guilds.size(), 1);
+        statsd.Metric<Gauge>("member", _bot->members.size(), 1);
+        statsd.Metric<Gauge>("guilds", _bot->guilds.size(), 1);
 
 
         for (auto & c : command_counters)
         {
             statsd.Metric<Count>("cmds", c.second, 1, { fmt::format("cmd:{}", c.first) });
+			run_commands += c.second;
             c.second = 0;
         }
 
@@ -390,10 +481,12 @@ void AegisBot::push_stats()
 // Webpanel stats
 void AegisBot::update_stats()
 {
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
     try
     {
         uint64_t count = 0;
-        count = bot.get_shard_transfer();
+        count = _bot->get_shard_transfer();
 
         struct guild_count_data
         {
@@ -401,9 +494,9 @@ void AegisBot::update_stats()
             size_t members;
         };
 
-        std::vector<guild_count_data> shard_guild_c(bot.shard_max_count);
+        std::vector<guild_count_data> shard_guild_c(_bot->shard_max_count);
 
-        for (auto & v : bot.guilds)
+        for (auto & v : _bot->guilds)
         {
             ++shard_guild_c[v.second->shard_id].guilds;
             shard_guild_c[v.second->shard_id].members += v.second->get_members().size();
@@ -411,10 +504,10 @@ void AegisBot::update_stats()
 
         //w << fmt::format("  Total transfer: {} Memory usage: {}\n", format_bytes(count), format_bytes(aegis::utility::getCurrentRSS()));
 
-        for (uint32_t i = 0; i < bot.shard_max_count; ++i)
+        for (uint32_t i = 0; i < _bot->shard_max_count; ++i)
         {
-            auto & s = bot.get_shard_by_id(i);
-            auto time_count = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - bot.get_shard_mgr().get_shard(s.get_id()).lastwsevent).count();
+            auto & s = _bot->get_shard_by_id(i);
+            auto time_count = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - _bot->get_shard_mgr().get_shard(s.get_id()).lastwsevent).count();
 
             std::vector<std::string> toadd;
             toadd.emplace_back(fmt::format("config:shards:{}", s.get_id()));
@@ -426,6 +519,17 @@ void AegisBot::update_stats()
             toadd.emplace_back(std::to_string(shard_guild_c[s.get_id()].guilds));
             toadd.emplace_back("members");
             toadd.emplace_back(std::to_string(shard_guild_c[s.get_id()].members));
+            const auto & _t = s.get_trace();
+            if (!_t.empty())
+            {
+                toadd.emplace_back("session1");
+                toadd.emplace_back(_t[0]);
+                if (_t.size() > 1)
+                {
+                    toadd.emplace_back("session2");
+                    toadd.emplace_back(s.get_trace()[1]);
+                }
+            }
             toadd.emplace_back("uptime");
             toadd.emplace_back(s.uptime_str());
             toadd.emplace_back("last_message");
@@ -449,6 +553,9 @@ void AegisBot::update_stats()
 
 void AegisBot::send_memory_stats()
 {
+    if (_bot->get_state() == aegis::bot_status::shutdown)
+        return;
+
 //     std::string output = fmt::format("Stats: Map: {:>11} Vector: {:>11} String: {:>11}",
 //                                      format_bytes(aegis::map_storage.load(std::memory_order_relaxed)),
 //                                      format_bytes(aegis::vector_storage.load(std::memory_order_relaxed)),
@@ -490,54 +597,66 @@ void AegisBot::load_config()
             logging_address = cfg_bot["logging-address"].get<std::string>();
         if (!cfg_bot["logging-port"].is_null())
             logging_port = cfg_bot["logging-port"].get<std::string>();
-
+        if (!cfg_bot["redis-address"].is_null())
+            redis_address = cfg_bot["redis-address"].get<std::string>();
     }
 }
 
 void AegisBot::do_log(std::string msg)
 {
-    bot.log->debug(msg);
-    asio::post(_io_service, asio::bind_executor(strand, [msg, this]()
-    {
+    AEGIS_DEBUG(_bot->log, msg);
+//     asio::post(_io_service, asio::bind_executor(strand, [msg, this]()
+//     {
+        if (_bot->get_state() == aegis::bot_status::shutdown)
+            return;
+
         std::lock_guard<std::mutex> lock(r_mutex);
         redis.command("PUBLISH", { "aegis:log", msg });
-    }));
+//     }));
 }
 
-bool AegisBot::create_message(aegis::channel & _channel, const std::string & str, bool _override) noexcept
+aegis::future<aegis::gateway::objects::message> AegisBot::create_message(aegis::channel & _channel, const std::string & str, bool _override) noexcept
 {
     auto guild_id = _channel.get_guild_id();
-    if (!guild_id) return false;
+    if (!guild_id)
+        return aegis::make_exception_future<aegis::gateway::objects::message>(aegis::error::no_permission);
     auto & g_info = get_guild(guild_id);
     if (!_override && g_info.is_channel_ignored(_channel.get_id()))
-        return false;
-    std::error_code ec;
-    _channel.create_message(ec, str);
-    if (ec)
-        return false;
-    return true;
+        return aegis::make_exception_future<aegis::gateway::objects::message>(aegis::error::no_permission);
+
+    return std::move(_channel.create_message(str));
+//     auto res = _channel.create_message(str).then([&](aegis::rest::rest_reply && reply) -> bool
+//     {
+//         if (reply.reply_code == 200)
+//             return true;
+//         return false;
+//     }).handle_exception([](auto &&)
+//     {
+//         return false;
+//     });
+//     return res.get();
 }
 
 void AegisBot::init()
 {
 #ifdef WIN32
-    ipaddress = "192.168.184.136";
+    ipaddress = redis_address;// "192.168.184.136";
 #else
     ipaddress = "127.0.0.1";
 #endif
     port = 6379;
 
-    bot.log->info("Connecting to Redis.");
+    _bot->log->info("Connecting to Redis.");
     
     asio::ip::address connectaddress = asio::ip::make_address(ipaddress);
     std::string errmsg;
     if (!redis.connect(connectaddress, port, errmsg))
     {
-        bot.log->critical("Can't connect to redis: {}", errmsg);
+        _bot->log->critical("Can't connect to redis: {}", errmsg);
         throw std::runtime_error("Can't connect to redis.");
     }
 
-    bot.log->info("Redis connected");
+    _bot->log->info("Redis connected");
 
     redisclient::RedisValue result;
     if (!password.empty())
@@ -545,7 +664,7 @@ void AegisBot::init()
         result = redis.command("AUTH", { password });
         if (result.isError())
         {
-            bot.log->critical("AUTH error: {}", result.toString());
+            _bot->log->critical("AUTH error: {}", result.toString());
             throw std::runtime_error("Unable to auth Redis");
         }
     }
@@ -561,6 +680,11 @@ void AegisBot::init()
         commands.push_back(c);
     }
 
+	///custom shit init
+	auto umods = get_array(fmt::format("config:umod_servers"));
+	for (const auto& [k, v] : umods)
+		umod_servers.emplace(std::stoll(k), std::stoll(v));
+
     //module initialization
 
     auto mods = get_vector(fmt::format("{}:modules", r_bot_config));
@@ -573,14 +697,17 @@ void AegisBot::init()
         modules id = static_cast<modules>(std::stoll(arr["id"]));
 
         bot_modules.emplace(id, s_module_data{ name, prefix, enabled });
-        bot.log->info("Module [{}] loaded with prefix [{}] id [{}] and default enabled [{}]", name, prefix, id, enabled);
+        _bot->log->info("Module [{}] loaded with prefix [{}] id [{}] and default enabled [{}]", name, prefix, id, enabled);
     }
 
-    bot.set_on_message_end(std::bind(&AegisBot::message_end, this, std::placeholders::_1, std::placeholders::_2));
-    bot.set_on_js_end(std::bind(&AegisBot::js_end, this, std::placeholders::_1, std::placeholders::_2));
+    _bot->set_on_message_end(std::bind(&AegisBot::message_end, this, std::placeholders::_1, std::placeholders::_2));
+    _bot->set_on_js_end(std::bind(&AegisBot::js_end, this, std::placeholders::_1, std::placeholders::_2));
 
-    bot.set_on_rest_end([&](std::chrono::steady_clock::time_point start_time, uint16_t _code)
+    _bot->set_on_rest_end([&](std::chrono::steady_clock::time_point start_time, uint16_t _code)
     {
+        if (_bot->get_state() == aegis::bot_status::shutdown)
+            return;
+
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_time).count();
         ++http_codes[_code];
         counters.rest_time += us;
@@ -613,7 +740,7 @@ void AegisBot::init()
         do_raw("DEL", { "config:shards" });
         std::vector<std::string> toadd;
         toadd.emplace_back("config:shards");
-        for (uint32_t x = 0; x < bot.get_shard_mgr().shard_max_count; ++x)
+        for (uint32_t x = 0; x < _bot->get_shard_mgr().shard_max_count; ++x)
             toadd.push_back(std::to_string(x));
         sadd(toadd);
     }
@@ -630,6 +757,12 @@ std::string replace_all(std::string str, const std::string& from, const std::str
     return str;
 }
 
+aegis::future<int> thing()
+{
+    std::this_thread::sleep_for(100ms);
+    return aegis::make_ready_future(1);
+}
+
 void AegisBot::redis_cmd(const std::vector<char> &buf)
 {
     //currently using PUBSUB but a blocking list pop may be better as that would not be affected
@@ -644,6 +777,29 @@ void AegisBot::redis_cmd(const std::vector<char> &buf)
     {
         basic_action("publish", { "aegis:response", text });
     };
+
+    if (t[0] == "echo")
+    {
+        auto res = async([=]() -> int
+        {
+            std::this_thread::sleep_for(100ms);
+            return async([=]() -> int
+            {
+                std::this_thread::sleep_for(100ms);
+                return 5;
+            }).get();
+        });
+//         auto res = thing().then([](int a)
+//         {
+//             //std::this_thread::sleep_for(500ms);
+//             return 5;
+//         });
+
+        //publish aegis:commands echo
+
+        std::cout << res.get() << '\n';
+        return;
+    }
 
     if (t[0] == "message")
     {
@@ -675,22 +831,22 @@ void AegisBot::redis_cmd(const std::vector<char> &buf)
         if (t[1] == "shard")
         {
             int32_t snum = std::stoi(std::string{ t[3] });
-            auto & s = bot.get_shard_by_id(snum);
+            auto & s = _bot->get_shard_by_id(snum);
             if (t[2] == "connect")
             {
                 if (!s.is_connected())
-                    bot.get_shard_mgr().queue_reconnect(s);
+                    _bot->get_shard_mgr().queue_reconnect(s);
             }
             else if (t[2] == "disconnect")
             {
                 if (s.is_connected())
-                    bot.get_shard_mgr().close(s, 1001, "", aegis::shard_status::Shutdown);
+                    _bot->get_shard_mgr().close(s, 1001, "", aegis::shard_status::shutdown);
             }
             else if (t[2] == "reconnect")
             {
                 if (s.is_connected())
-                    bot.get_shard_mgr().close(s, 1001, "", aegis::shard_status::Shutdown);
-                bot.get_shard_mgr().queue_reconnect(s);
+                    _bot->get_shard_mgr().close(s, 1001, "", aegis::shard_status::shutdown);
+                _bot->get_shard_mgr().queue_reconnect(s);
             }
             return;
         }
@@ -702,7 +858,7 @@ void AegisBot::redis_cmd(const std::vector<char> &buf)
             return;//failure
 
         aegis::snowflake guild_id = std::stoull(std::string{ t[1] });
-        auto target_guild = bot.find_guild(guild_id);
+        auto target_guild = _bot->find_guild(guild_id);
         if (target_guild == nullptr)
             return;//no guild
         auto g_data_it = guild_data.find(guild_id);
@@ -734,7 +890,7 @@ void AegisBot::redis_cmd(const std::vector<char> &buf)
         }
         else if (t[2] == "leave")
         {
-            if (auto g = bot.find_guild(guild_id); g)
+            if (auto g = _bot->find_guild(guild_id); g)
             {
                 g->leave();
             }
@@ -811,35 +967,35 @@ void AegisBot::inject()
 {
     using namespace std::placeholders;
 
-    for (uint32_t i = 0; i < bot.shard_max_count; ++i)
+    for (uint32_t i = 0; i < _bot->get_shard_mgr().shard_max_count; ++i)
         shards.push_back({});
 
-    bot.set_on_message_create(std::bind(&AegisBot::MessageCreate, this, _1));
-    bot.set_on_message_delete(std::bind(&AegisBot::MessageDelete, this, _1));
-    bot.set_on_message_delete_bulk(std::bind(&AegisBot::MessageDeleteBulk, this, _1));
-    bot.set_on_message_update(std::bind(&AegisBot::MessageUpdate, this, _1));
-    bot.set_on_message_create_dm(std::bind(&AegisBot::MessageCreateDM, this, _1));
-    bot.set_on_channel_create(std::bind(&AegisBot::ChannelCreate, this, _1));
-    bot.set_on_channel_update(std::bind(&AegisBot::ChannelUpdate, this, _1));
-    bot.set_on_channel_delete(std::bind(&AegisBot::ChannelDelete, this, _1));
-    bot.set_on_guild_create(std::bind(&AegisBot::GuildCreate, this, _1));
-    bot.set_on_guild_delete(std::bind(&AegisBot::GuildDelete, this, _1));
-    bot.set_on_guild_update(std::bind(&AegisBot::GuildUpdate, this, _1));
-    bot.set_on_guild_member_add(std::bind(&AegisBot::GuildMemberAdd, this, _1));
-    bot.set_on_guild_member_remove(std::bind(&AegisBot::GuildMemberRemove, this, _1));
-    bot.set_on_guild_member_update(std::bind(&AegisBot::GuildMemberUpdate, this, _1));
-    bot.set_on_guild_member_chunk(std::bind(&AegisBot::GuildMemberChunk, this, _1));
-    bot.set_on_guild_ban_add(std::bind(&AegisBot::GuildBanAdd, this, _1));
-    bot.set_on_guild_ban_remove(std::bind(&AegisBot::GuildBanRemove, this, _1));
-    bot.set_on_presence_update(std::bind(&AegisBot::PresenceUpdate, this, _1));
-    bot.set_on_voice_state_update(std::bind(&AegisBot::VoiceStateUpdate, this, _1));
-    bot.set_on_voice_server_update(std::bind(&AegisBot::VoiceServerUpdate, this, _1));
-    bot.set_on_ready(std::bind(&AegisBot::Ready, this, _1));
-    bot.set_on_resumed(std::bind(&AegisBot::Resumed, this, _1));
-    bot.set_on_guild_role_create(std::bind(&AegisBot::GuildRoleCreate, this, _1));
-    bot.set_on_guild_role_update(std::bind(&AegisBot::GuildRoleUpdate, this, _1));
-    bot.set_on_guild_role_delete(std::bind(&AegisBot::GuildRoleDelete, this, _1));
-    bot.set_on_user_update(std::bind(&AegisBot::UserUpdate, this, _1));
+    _bot->set_on_message_create(std::bind(&AegisBot::MessageCreate, this, _1));
+    _bot->set_on_message_delete(std::bind(&AegisBot::MessageDelete, this, _1));
+    _bot->set_on_message_delete_bulk(std::bind(&AegisBot::MessageDeleteBulk, this, _1));
+    _bot->set_on_message_update(std::bind(&AegisBot::MessageUpdate, this, _1));
+    _bot->set_on_message_create_dm(std::bind(&AegisBot::MessageCreateDM, this, _1));
+    _bot->set_on_channel_create(std::bind(&AegisBot::ChannelCreate, this, _1));
+    _bot->set_on_channel_update(std::bind(&AegisBot::ChannelUpdate, this, _1));
+    _bot->set_on_channel_delete(std::bind(&AegisBot::ChannelDelete, this, _1));
+    _bot->set_on_guild_create(std::bind(&AegisBot::GuildCreate, this, _1));
+    _bot->set_on_guild_delete(std::bind(&AegisBot::GuildDelete, this, _1));
+    _bot->set_on_guild_update(std::bind(&AegisBot::GuildUpdate, this, _1));
+    _bot->set_on_guild_member_add(std::bind(&AegisBot::GuildMemberAdd, this, _1));
+    _bot->set_on_guild_member_remove(std::bind(&AegisBot::GuildMemberRemove, this, _1));
+    _bot->set_on_guild_member_update(std::bind(&AegisBot::GuildMemberUpdate, this, _1));
+    _bot->set_on_guild_member_chunk(std::bind(&AegisBot::GuildMemberChunk, this, _1));
+    _bot->set_on_guild_ban_add(std::bind(&AegisBot::GuildBanAdd, this, _1));
+    _bot->set_on_guild_ban_remove(std::bind(&AegisBot::GuildBanRemove, this, _1));
+    _bot->set_on_presence_update(std::bind(&AegisBot::PresenceUpdate, this, _1));
+    _bot->set_on_voice_state_update(std::bind(&AegisBot::VoiceStateUpdate, this, _1));
+    _bot->set_on_voice_server_update(std::bind(&AegisBot::VoiceServerUpdate, this, _1));
+    _bot->set_on_ready(std::bind(&AegisBot::Ready, this, _1));
+    _bot->set_on_resumed(std::bind(&AegisBot::Resumed, this, _1));
+    _bot->set_on_guild_role_create(std::bind(&AegisBot::GuildRoleCreate, this, _1));
+    _bot->set_on_guild_role_update(std::bind(&AegisBot::GuildRoleUpdate, this, _1));
+    _bot->set_on_guild_role_delete(std::bind(&AegisBot::GuildRoleDelete, this, _1));
+    _bot->set_on_user_update(std::bind(&AegisBot::UserUpdate, this, _1));
 
 //     bot.i_typing_start = std::bind(&AegisBot::TypingStart, this, _1);
 //     
@@ -861,29 +1017,29 @@ void AegisBot::MessageCreateDM(aegis::gateway::events::message_create obj)
     
     const auto &[channel_id, guild_id, message_id, member_id] = obj.msg.get_related_ids();
 
-    auto _member = obj._member;
-    if (_member == nullptr)
-    {
-        //sanity checks
-        if (obj._channel == nullptr)
-        {
-            bot.log->critical("DM Member AND channel does not exist message_id: [{}] channel_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.get_content());
-            return;
-        }
-        bot.log->critical("DM Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
+    auto & user = obj.user.value().get();
+//     if (_member == nullptr)
+//     {
+//         //sanity checks
+//         if (obj._channel == nullptr)
+//         {
+//             bot.log->critical("DM Member AND channel does not exist message_id: [{}] channel_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.get_content());
+//             return;
+//         }
+//         bot.log->critical("DM Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
+//         return;
+//     }
+
+    if (user.get_username() != obj.msg.author.username)
+        _bot->log->critical("DM Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, user.get_username(), message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
+
+
+    std::string_view username{ user.get_username() };
+
+    if (user.get_id() == _bot->self()->get_id())
         return;
-    }
 
-    if (obj._member->get_username() != obj.msg.author.username)
-        bot.log->critical("DM Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, obj._member->get_username(), message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
-
-
-    std::string_view username{ obj._member->get_username() };
-
-    if (obj._member && obj._member->get_id() == obj.bot->self()->get_id())
-        return;
-
-    auto _channel = obj._channel;
+    auto & _channel = obj.channel;
 
     std::string_view content{ obj.msg.get_content() };
 
@@ -905,16 +1061,16 @@ void AegisBot::MessageCreateDM(aegis::gateway::events::message_create obj)
     }*/
 
     if (toks[0] == "help")
-        _channel->create_message("This bot is in development. If you'd like more information on it, please join the discord server https://discord.gg/Kv7aP5K");
+        _channel.create_message("This bot is in development. If you'd like more information on it, please join the discord server https://discord.gg/Kv7aP5K");
 
-    if (toks[0] == obj.bot->mention)
+    if (toks[0] == _bot->mention)
     {
         //user is mentioning me
         if (toks.empty())
             return;
         if (toks[1] == "help")
         {
-            _channel->create_message("This bot is in development. If you'd like more information on it, please join the discord server https://discord.gg/Kv7aP5K");
+            _channel.create_message("This bot is in development. If you'd like more information on it, please join the discord server https://discord.gg/Kv7aP5K");
             return;
         }
         return;
@@ -1051,7 +1207,7 @@ std::string AegisBot::tokenize_one(const std::string s, char delim, uint32_t & c
     return tok;
 }
 
-bool AegisBot::has_perms(Guild & g_data, aegis::member & _member, aegis::guild & _guild, std::string cmd)
+bool AegisBot::has_perms(Guild & g_data, aegis::user & _user, aegis::guild & _guild, std::string cmd)
 {
 //     if (g_data._modules[modules::Auction]->enabled)
 //     {
@@ -1072,7 +1228,7 @@ bool AegisBot::has_perms(Guild & g_data, aegis::member & _member, aegis::guild &
     {
         for (auto & perm : c.user_perms)
         {
-            if (perm.first == _member.get_id())
+            if (perm.first == _user.get_id())
             {
                 if (perm.second == s_command_data::perm_access::Allow)
                     return true;
@@ -1085,7 +1241,7 @@ bool AegisBot::has_perms(Guild & g_data, aegis::member & _member, aegis::guild &
     {
         for (auto & perm : c.role_perms)
         {
-            if (_guild.member_has_role(_member.get_id(), perm.first))
+            if (_guild.member_has_role(_user.get_id(), perm.first))
             {
                 if (perm.second == s_command_data::perm_access::Allow)
                     return true;
@@ -1136,10 +1292,12 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
 //         bot.get_rest_controller().execute2(rp);
 //     }
 
+    aegis::core & bot = *_bot;
+
     counters.messages++;
     statsd.Metric<Count>("msgs", 1, 1);
 
-    shards[obj._shard->get_id()].last_message = std::chrono::steady_clock::now();
+    shards[obj.shard.get_id()].last_message = std::chrono::steady_clock::now();
 
     {
         std::unique_lock<std::shared_mutex> l(m_message);
@@ -1151,32 +1309,32 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
 
     const auto &[channel_id, guild_id, message_id, member_id] = obj.msg.get_related_ids();
 
-    if (!obj.has_member())
-    {
+//     if (!obj.has_user())
+//     {
         if (obj.msg.author.is_webhook())
             return;
 
         //sanity checks
-        if (!obj.has_channel())
-            bot.log->error("Member AND channel does not exist message_id: [{}] channel_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.get_content());
-        else
-            bot.log->error("Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
-        return;
-    }
+//         if (!obj.has_channel())
+//             bot.log->error("Member AND channel does not exist message_id: [{}] channel_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.get_content());
+//         else
+//             bot.log->error("Member does not exist message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
+//         return;
+//     }
 
-    auto & _member = obj.get_member();
+    auto & user = obj.get_user();
 
-    if (_member.get_username() != obj.msg.author.username)
-        bot.log->error("Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, obj._member->get_username(), message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
+    if (user.get_username() != obj.msg.author.username)
+        bot.log->error("Member name does not match msg: [{}] cache: [{}] message_id: [{}] channel_id: [{}] member_id: [{}] msg: [{}]", obj.msg.author.username, user.get_username(), message_id, channel_id, obj.msg.author.id, obj.msg.get_content());
 
-    std::string_view username{ obj._member->get_username() };
+    std::string_view username{ user.get_username() };
 
-    auto & _channel = obj.get_channel();
+    auto & _channel = obj.channel;
     auto & _guild = _channel.get_guild();
 
     Guild & g_data = get_guild(guild_id);
 
-    if (obj.get_member().get_id() == obj.bot->self()->get_id())
+    if (user.get_id() == bot.self()->get_id())
     {
         if (obj.msg.nonce == checktime)
         {
@@ -1192,7 +1350,7 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
     auto it = peeks.find(_channel.get_id());
     if (it != peeks.end())
     {
-        std::string peekmsg = fmt::format("Peek: [{}:#{}] [{}]: {}", _guild.get_name(), _channel.get_name(), _member.get_full_name(), obj.msg.get_content());
+        std::string peekmsg = fmt::format("Peek: [{}:#{}] [{}]: {}", _guild.get_name(), _channel.get_name(), user.get_full_name(), obj.msg.get_content());
         bot.log->info(peekmsg);
         asio::post(_io_service, std::bind(&AegisBot::do_peek, this, peekmsg));
     }
@@ -1255,7 +1413,8 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
             is_command = is_mention_command = true;
         }
     }
-    else
+
+    if (!is_mention_command)
     {
         if (g_data.cmd_prefix_list.empty())
         {
@@ -1298,7 +1457,7 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
     std::transform(toks[0].begin(), toks[0].end(), lowercommand.begin(), ::tolower);
 
     //create shared data object
-    shared_data sd{channel_id, guild_id, message_id, member_id, guild_owner_id, username, _member, _channel, _guild, content, g_data, toks, obj, *this};
+    shared_data sd{channel_id, guild_id, message_id, member_id, guild_owner_id, username, user, _channel, _guild, content, g_data, toks, obj, *this};
 
     try
     {
@@ -1306,24 +1465,20 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
         {
             if (member_id != bot_owner_id && member_id != guild_owner_id)
             {
-                if (!has_perms(g_data, _member, _guild, std::string{ toks[0] }))
-                    //bot.log->critical("No permission [{}] [{}]", member_id, toks[0]);
+                if (!has_perms(g_data, user, _guild, std::string{ toks[0] }))
                     return;
 
                 if (g_data.ignore_users)
                 {
                     //check for mod perms
-                    //if (_guild.get_permissions(&_member, &_channel).can_manage_guild)
-                    auto & member_g_info = _member.get_guild_info(guild_id);
+                    auto & member_g_info = user.get_guild_info(guild_id);
+                    std::shared_lock<std::shared_mutex> l(user.mtx());
+                    auto & mod_role = _guild.get_role(g_data.mod_role);
+                    for (auto & r : member_g_info.roles)
                     {
-                        std::shared_lock<std::shared_mutex> l(_member.mtx());
-                        auto & mod_role = _guild.get_role(g_data.mod_role);
-                        for (auto & r : member_g_info.roles)
-                        {
-                            auto & rl = _guild.get_role(r);
-                            if (rl.position >= mod_role.position)
-                                goto IGNOREUSERSFALSE;
-                        }
+                        auto & rl = _guild.get_role(r);
+                        if (rl.position >= mod_role.position)
+                            goto IGNOREUSERSFALSE;
                     }
                     return;//does not have permission
                 }
@@ -1335,21 +1490,180 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
                 // is an actual command. log something
                 do_log(fmt::format("Admin Command: Guild[{}] G[{}] Channel[{}] User[{}] Cmd[{}]",
                                    _guild.get_name(), _guild.get_id(),
-                                   _channel.get_name(), _member.get_full_name(),
+                                   _channel.get_name(), user.get_full_name(),
                                    obj.msg.get_content()));
-                ++command_counters[lowercommand];
+                //++command_counters[lowercommand];
                 return;
             }
 
-            if (process_user_messages(obj, sd))
+            if (is_guild_owner)
             {
-                // is an actual command. log something
-                do_log(fmt::format("User Command: Guild[{}] G[{}] Channel[{}] User[{}] Cmd[{}]",
-                                   _guild.get_name(), _guild.get_id(),
-                                   _channel.get_name(), _member.get_full_name(),
-                                   obj.msg.get_content()));
-                ++command_counters[lowercommand];
-                ++counters.commands;
+                if (process_user_messages(obj, sd))
+                {
+                    // is an actual command. log something
+                    do_log(fmt::format("User Command: Guild[{}] G[{}] Channel[{}] User[{}] Cmd[{}]",
+                                       _guild.get_name(), _guild.get_id(),
+                                       _channel.get_name(), user.get_full_name(),
+                                       obj.msg.get_content()));
+                    ++command_counters[lowercommand];
+                    ++counters.commands;
+                    return;
+                }
+            }
+
+            //misc commands to fix later
+
+            if (toks[0] == "info")
+            {
+                _channel.create_message_embed({}, make_info_obj(obj.shard));
+                return;
+            }
+
+			if (toks[0] == "invite")
+			{
+				_channel.create_message("Invite me to your own server: https://discordapp.com/oauth2/authorize?scope=bot&permissions=8&client_id=288063163729969152");
+			}
+
+            if (toks[0] == "stats")
+            {
+                _channel.create_message(make_stats_obj(obj.shard));
+                return;
+            }
+
+            if (toks[0] == "reportbug")
+            {
+                request = request.substr(toks[0].size() + 1);
+                bot.find_channel(bug_report_channel_id)->create_message(fmt::format("[Bug report] u[{}] g[{}] c[{}] ``` {} ```", user.get_id(), _guild.get_id(), _channel.get_id(), request));
+                return;
+            }
+
+            if (toks[0] == "feedback")
+            {
+                request = request.substr(toks[0].size() + 1);
+                bot.find_channel(bot_control_channel)->create_message(fmt::format("[Feedback] u[{}] g[{}] c[{}] ``` {} ```", user.get_id(), _guild.get_id(), _channel.get_id(), request));
+                return;
+            }
+
+
+            if (toks[0] == "source")
+            {
+                json t = {
+                    { "title", "AegisBot" },
+                    { "description", "[Latest library source](https://github.com/zeroxs/aegis.cpp)\n[Official Bot Server](https://discord.gg/vfS7fcB)\n[Official Library Server](https://discord.gg/Kv7aP5K)" },
+                    { "color", rand() % 0xFFFFFF }
+                };
+
+                _channel.create_message_embed({}, t);
+                return;
+            }
+
+/*
+            if (toks[0] == "stats")
+            {
+                _channel.create_message("Bot statistics: https://p.datadoghq.com/sb/2d84bb2a8-ee05b3fef6776577981ed2b485b8bfc1");
+                return;
+            }*/
+
+            if (toks[0] == "gdpr")
+            {
+                _channel.create_message("More information on how we handle your data can be found here: https://www.archives.gov/founding-docs");
+                return;
+            }
+
+            if (toks[0] == "help")
+            {
+                if (toks.size() == 1)
+                {
+                    //basic help
+                    std::string res = get("config:help");
+					_channel.create_message(res);
+                    return;
+                }
+
+                std::string res = get(fmt::format("config:help:{}", toks[1]));
+				if (res.empty())
+					_channel.create_message(fmt::format("No help topic for {}", toks[1]));
+				else
+					_channel.create_message(res);
+                return;
+            }
+
+            if (toks[0] == "sethelp")
+            {
+                if (toks.size() == 2)
+                {
+                    //basic help
+                    put("config:help", toks[1].data());
+                    req_success(obj.msg);
+                    return;
+                }
+
+                put(fmt::format("config:help:{}", toks[1]), toks[2].data());
+                req_success(obj.msg);
+                return;
+            }
+
+            //     if (toks[0] == "mdata")
+            //     {
+            //         if (check_params(toks, 3, "mdata `module` (reset|save|reload)"))
+            //             return;
+            // 
+            //         if (toks[1] == "auction")
+            //         {
+            //             if (toks[2] == "reset")
+            //             {
+            // 
+            // 
+            //                 hset("auction", { "hostrole", "0" }, g_data);
+            //                 hset("auction", { "managerrole", "0" }, g_data);
+            //                 hset("auction", { "bidtime", "0" }, g_data);
+            //                 hset("auction", { "defaultfunds", "1000" }, g_data);
+            // 
+            // 
+            //                 auto & mod_data = g_data.enabled_modules[modules::Auction];
+            // 
+            //                 Guild & g_data = get_guild(guild_id);
+            //                 if (g_data.auction_data == nullptr)
+            //                     g_data.auction_data = std::make_unique<mod_auction>(g_data, bot.io_service());
+            //                 mod_auction & a_data = *g_data.auction_data;
+            // 
+            //                 a_data.hostrole = 0;
+            //                 a_data.managerrole = 0;
+            //                 a_data.bidtime = 0;
+            //                 a_data.defaultfunds = 1000;
+            // 
+            //                 a_data.hostrole = std::stoll(hget("auction", { "hostrole" }, g_data));
+            //                 a_data.managerrole = std::stoll(hget("auction", { "managerrole" }, g_data));
+            //                 a_data.bidtime = std::stoll(hget("auction", { "bidtime" }, g_data));
+            //                 a_data.defaultfunds = std::stoll(hget("auction", { "defaultfunds" }, g_data));
+            // 
+            // 
+            // 
+            //             }
+            //         }
+            //         else if (toks[1] == "music")
+            //         {
+            //         }
+            //         return;
+            //     }
+
+            if (toks[0] == "bowsette")
+            {
+                if (!_channel.nsfw())
+                {
+                    _channel.create_message("Channel must be set to NSFW for this command.");
+                    return;
+                }
+                aegis::rest::request_params rp;
+                rp.host = "lewd.bowsette.pictures";
+                rp.path = "/api/request";
+                rp.port = "443";
+
+                auto rep = bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+
+                json j = json::parse(rep.content);
+
+                _channel.create_message(j["url"].get<std::string>());
                 return;
             }
         }
@@ -1363,12 +1677,12 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
                         return;
 
                 if (is_command)
-                    if (mod.second->check_command(std::string{ toks[0] }, sd))
+                    if (mod.second->check_command(lowercommand, sd))
                     {
                         // is an actual command. log something
                         do_log(fmt::format("Module Command: Guild[{}] G[{}] Channel[{}] User[{}] Cmd[{}]",
                                            _guild.get_name(), _guild.get_id(),
-                                           _channel.get_name(), _member.get_full_name(),
+                                           _channel.get_name(), user.get_full_name(),
                                            obj.msg.get_content()));
                         ++command_counters[lowercommand];
                         return;
@@ -1377,6 +1691,26 @@ void AegisBot::MessageCreate(aegis::gateway::events::message_create obj)
             else
                 throw std::runtime_error(fmt::format("{} module data does not exist guild_id [{}].", bot_modules[mod.first].name, guild_id));
         }
+
+
+        //misc text
+/*
+        {
+            bool found = false;
+            for (int i = 0; i < content.size() - 1; ++i)
+            {
+                if ((content[i] == '|') && (content[i + 1] == '|'))
+                {
+                    if (found)
+                    {
+                        obj.msg.delete_message();
+                        break;
+                    }
+                    found == true;
+                }
+            }
+        }*/
+
 //         if (module_enabled(g_data, modules::Auction))
 //         {
 //             if (g_data.auction_data == nullptr)
@@ -1441,39 +1775,41 @@ void AegisBot::MessageUpdate(aegis::gateway::events::message_update obj)
     // 
     // second update, channel_id embeds guild_id id
     {
-        std::shared_lock<std::shared_mutex> l(m_message);
-        aegis::snowflake message_id = obj.msg.get_id();
-        auto it = message_history.find(message_id);
-        if (it != message_history.end())
         {
-            //findy
-            auto & msg = it->second;
-            if (obj._member != nullptr)
+            std::unique_lock<std::shared_mutex> l(m_message);
+            aegis::snowflake message_id = obj.msg.get_id();
+            auto it = message_history.find(message_id);
+            if (it != message_history.end())
             {
-                //regular message update
-                //std::string old_content = msg.get_content();
-                //std::string new_content = obj.msg.get_content();
-                //do_log(fmt::format("Guild:Channel [{}:{}] - User [{}#{}]\nOriginal:\n{}\nChanged to:\n{}", obj._channel->get_guild().get_name(), obj._channel->get_name(), obj.msg.author.username, obj.msg.author.discriminator, msg.get_content(), obj.msg.get_content()));
-                msg = obj.msg;
-            }
-            else
-            {
-                //embed update
-//                 if (msg.has_member())
-//                     do_log(fmt::format("Guild:Channel [{}:{}] - User [{}] Embed update", obj._channel->get_guild().get_name(), obj._channel->get_name(), msg.get_member().get_full_name()));
-//                 else
-//                     do_log(fmt::format("Guild:Channel [{}:{}] - User [unknown] Embed update", obj._channel->get_guild().get_name(), obj._channel->get_name()));
-                if (obj.msg.embeds.empty())
+                //findy
+                auto & msg = it->second;
+                if (obj.user.has_value())
+                {
+                    //regular message update
+                    //std::string old_content = msg.get_content();
+                    //std::string new_content = obj.msg.get_content();
+                    //do_log(fmt::format("Guild:Channel [{}:{}] - User [{}#{}]\nOriginal:\n{}\nChanged to:\n{}", obj._channel->get_guild().get_name(), obj._channel->get_name(), obj.msg.author.username, obj.msg.author.discriminator, msg.get_content(), obj.msg.get_content()));
                     msg = obj.msg;
+                }
                 else
-                    msg.embeds = obj.msg.embeds;
+                {
+                    //embed update
+    //                 if (msg.has_member())
+    //                     do_log(fmt::format("Guild:Channel [{}:{}] - User [{}] Embed update", obj._channel->get_guild().get_name(), obj._channel->get_name(), msg.get_member().get_full_name()));
+    //                 else
+    //                     do_log(fmt::format("Guild:Channel [{}:{}] - User [unknown] Embed update", obj._channel->get_guild().get_name(), obj._channel->get_name()));
+                    if (obj.msg.embeds.empty())
+                        msg = obj.msg;
+                    else
+                        msg.embeds = obj.msg.embeds;
+                }
+                return;
             }
-            return;
         }
         //no findy
-        l.unlock();
+        //l.unlock();
         {
-            do_log(fmt::format("Guild:Channel [{}:{}] message not found. inserting.", obj._channel->get_guild().get_name(), obj._channel->get_name()));
+            //do_log(fmt::format("Guild:Channel [{}:{}] message not found. inserting.", obj._channel->get_guild().get_name(), obj._channel->get_name()));
             std::unique_lock<std::shared_mutex> l(m_message);
             message_history.insert({ obj.msg.get_id(), obj.msg });
         }
@@ -1489,16 +1825,29 @@ void AegisBot::MessageUpdate(aegis::gateway::events::message_update obj)
 
 void AegisBot::MessageDelete(aegis::gateway::events::message_delete obj)
 {
+    std::unique_lock<std::shared_mutex> l(m_message);
     auto msg = message_history.find(obj.id);
     if (msg == message_history.end())
         return;//unknown message
+
+    deleted_message_history.emplace(*msg);
+    message_history.erase(msg);
     
     //do_log(fmt::format("Guild:Channel [{}:{}] - User [{}#{}] Deleted:\n{}", obj._channel->get_guild().get_name(), obj._channel->get_name(), msg->second.author.username, msg->second.author.discriminator, msg->second.get_content()));
 }
 
 void AegisBot::MessageDeleteBulk(aegis::gateway::events::message_delete_bulk obj)
 {
-    return;
+    std::unique_lock<std::shared_mutex> l(m_message);
+    for (const auto & id : obj.ids)
+    {
+        auto msg = message_history.find(id);
+        if (msg == message_history.end())
+            return;//unknown message
+
+        deleted_message_history.emplace(*msg);
+        message_history.erase(msg);
+    }
 }
 
 void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
@@ -1512,16 +1861,16 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
 //         rp.body = j.dump();
 //         bot.get_rest_controller().execute2(rp);
 //     }
-    statsd.Metric<Gauge>("guilds", bot.guilds.size(), 1);
+    statsd.Metric<Gauge>("guilds", _bot->guilds.size(), 1);
  
-    aegis::snowflake & guild_id = obj._guild.guild_id;
+    aegis::snowflake & guild_id = obj.guild.guild_id;
    
-    auto & g_data = guild_data[guild_id];
+    auto & g_data = get_guild(guild_id);
 
     if (g_data.loaded)
         return;//already loaded. this catches an outage creating an existing guild
 
-    do_log(fmt::format("Loading guild [{}] on shard [{}]", guild_id, obj._shard->get_id()));
+    do_log(fmt::format("Loading guild [{}] on shard [{}]", guild_id, obj.shard.get_id()));
 
     g_data.redis_prefix = fmt::format("{}:{}", r_config, guild_id);
     g_data.cached = to_bool(hget({ g_data.redis_prefix, "cached" }));
@@ -1536,7 +1885,7 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
     //store roles
     {
         std::string guild_roles_key{ fmt::format("{}:roles", g_data.redis_prefix) };
-        for (const auto & r : obj._guild.roles)
+        for (const auto & r : obj.guild.roles)
         {
             std::string role_key{ fmt::format("{}:roles:{}", g_data.redis_prefix, r.role_id) };
 
@@ -1560,7 +1909,7 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
         }
         std::vector<std::string> rls;
         rls.emplace_back(guild_roles_key);
-        for (const auto & r : obj._guild.roles)
+        for (const auto & r : obj.guild.roles)
             rls.emplace_back(std::to_string(r.role_id));
 
         sadd(rls);
@@ -1569,7 +1918,7 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
     //store channels
     {
         std::string guild_channels_key{ fmt::format("{}:channels", g_data.redis_prefix) };
-        for (const auto & r : obj._guild.channels)
+        for (const auto & r : obj.guild.channels)
         {
             std::string channel_key{ fmt::format("{}:channels:{}", g_data.redis_prefix, r.channel_id) };
 
@@ -1595,7 +1944,7 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
         }
         std::vector<std::string> rls;
         rls.emplace_back(guild_channels_key);
-        for (const auto & r : obj._guild.channels)
+        for (const auto & r : obj.guild.channels)
             rls.emplace_back(std::to_string(r.channel_id));
 
         sadd(rls);
@@ -1608,21 +1957,21 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
     std::vector<std::string> vals;
     vals.emplace_back(g_data.redis_prefix);
     vals.emplace_back("name");
-    vals.emplace_back(obj._guild.name);
+    vals.emplace_back(obj.guild.name);
     vals.emplace_back("verification_level");
-    vals.emplace_back(std::to_string(obj._guild.verification_level));
+    vals.emplace_back(std::to_string(obj.guild.verification_level));
     vals.emplace_back("region");
-    vals.emplace_back(obj._guild.region);
+    vals.emplace_back(obj.guild.region);
     vals.emplace_back("mfa_level");
-    vals.emplace_back(std::to_string(obj._guild.mfa_level));
+    vals.emplace_back(std::to_string(obj.guild.mfa_level));
     vals.emplace_back("icon");
-    vals.emplace_back(obj._guild.icon);
+    vals.emplace_back(obj.guild.icon);
     vals.emplace_back("joined_at");
-    vals.emplace_back(obj._guild.joined_at);
+    vals.emplace_back(obj.guild.joined_at);
     vals.emplace_back("splash");
-    vals.emplace_back(obj._guild.splash);
+    vals.emplace_back(obj.guild.splash);
     hmset(vals);
-    auto g = bot.find_guild(guild_id);
+    auto g = _bot->find_guild(guild_id);
     if (!g)
         return;
     hset({ g_data.redis_prefix, "perms", std::to_string(g->base_permissions()) });
@@ -1630,6 +1979,8 @@ void AegisBot::GuildCreate(aegis::gateway::events::guild_create obj)
 
 void AegisBot::load_guild(aegis::snowflake guild_id, Guild & g_data)
 {
+    aegis::core & bot = *_bot;
+
     aegis::shards::shard * _shard = &bot.get_shard_by_guild(guild_id);
 
     if (!g_data.cached)
@@ -1704,29 +2055,39 @@ void AegisBot::load_guild(aegis::snowflake guild_id, Guild & g_data)
     {
         //check if module is already enabled. don't double enable
         auto res = static_cast<modules>(std::stoi(i));
+		auto& _modules = g_data._modules;
         auto it = g_data._modules.find(res);
         if (it != g_data._modules.end())
             continue;
-        if (res == modules::Auction)
-            g_data._modules.emplace(res, new mod_auction(g_data, bot.get_io_context()));
-        else if (res == modules::Music)
-            g_data._modules.emplace(res, new mod_music(g_data, bot.get_io_context()));
-        else if (res == modules::Announcer)
-            g_data._modules.emplace(res, new mod_announcer(g_data, bot.get_io_context()));
-        else if (res == modules::Autoresponder)
-            g_data._modules.emplace(res, new mod_autoresponder(g_data, bot.get_io_context()));
-        else if (res == modules::Autoroles)
-            g_data._modules.emplace(res, new mod_autoroles(g_data, bot.get_io_context()));
-        else if (res == modules::Moderation)
-            g_data._modules.emplace(res, new mod_moderation(g_data, bot.get_io_context()));
-        else if (res == modules::Tags)
-            g_data._modules.emplace(res, new mod_tag(g_data, bot.get_io_context()));
-        else if (res == modules::Log)
-            g_data._modules.emplace(res, new mod_log(g_data, bot.get_io_context()));
-        else if (res == modules::Automod)
-            g_data._modules.emplace(res, new mod_automod(g_data, bot.get_io_context()));
-        else
+		Module* _module = nullptr;
+		switch (res)
+		{
+			case modules::Auction:
+				_module = init_module<mod_auction>(g_data); break;
+			case modules::Music:
+				_module = init_module<mod_music>(g_data); break;
+			case modules::Announcer:
+				_module = init_module<mod_announcer>(g_data); break;
+			case modules::Autoresponder:
+				_module = init_module<mod_autoresponder>(g_data); break;
+			case modules::Autoroles:
+				_module = init_module<mod_autoroles>(g_data); break;
+			case modules::Moderation:
+				_module = init_module<mod_moderation>(g_data); break;
+			case modules::Tags:
+				_module = init_module<mod_tag>(g_data); break;
+			case modules::Log:
+				_module = init_module<mod_log>(g_data); break;
+			case modules::Automod:
+				_module = init_module<mod_automod>(g_data); break;
+			case modules::Bansync:
+				_module = init_module<mod_bansync>(g_data); break;
+			case modules::Globalbanlist:
+				_module = init_module<mod_globalbanlist>(g_data); break;
+		}
+		if (!_module)
             continue;
+		_modules.emplace(res, _module);
         g_data._modules[res]->admin_override = to_bool(hget({ fmt::format("{}:{}", g_data.redis_prefix, bot_modules[res].prefix), "admin_override" }));
         g_data._modules[res]->enabled = true;
         g_data._modules[res]->load(*this);
@@ -1799,6 +2160,8 @@ void AegisBot::load_guild(aegis::snowflake guild_id, Guild & g_data)
 
 void AegisBot::toggle_mod(Guild & g_data, const modules mod, const bool toggle)
 {
+    aegis::core & bot = *_bot;
+
     if (toggle)
         sadd({ fmt::format("{}:modules", g_data.redis_prefix), std::to_string(mod) });
     else
@@ -1815,26 +2178,36 @@ void AegisBot::toggle_mod(Guild & g_data, const modules mod, const bool toggle)
     }
     else
     {
-        if (mod == modules::Auction)
-            g_data._modules.emplace(mod, new mod_auction(g_data, bot.get_io_context()));
-        else if (mod == modules::Music)
-            g_data._modules.emplace(mod, new mod_music(g_data, bot.get_io_context()));
-        else if (mod == modules::Announcer)
-            g_data._modules.emplace(mod, new mod_announcer(g_data, bot.get_io_context()));
-        else if (mod == modules::Autoresponder)
-            g_data._modules.emplace(mod, new mod_autoresponder(g_data, bot.get_io_context()));
-        else if (mod == modules::Autoroles)
-            g_data._modules.emplace(mod, new mod_autoroles(g_data, bot.get_io_context()));
-        else if (mod == modules::Moderation)
-            g_data._modules.emplace(mod, new mod_moderation(g_data, bot.get_io_context()));
-        else if (mod == modules::Tags)
-            g_data._modules.emplace(mod, new mod_tag(g_data, bot.get_io_context()));
-        else if (mod == modules::Log)
-            g_data._modules.emplace(mod, new mod_log(g_data, bot.get_io_context()));
-        else if (mod == modules::Automod)
-            g_data._modules.emplace(mod, new mod_automod(g_data, bot.get_io_context()));
-        else
-            throw std::runtime_error(fmt::format("{} invalid module id - guild_id [{}].", mod, g_data.guild_id));
+		auto& _modules = g_data._modules;
+		Module * _module = nullptr;
+		switch (mod)
+		{
+		case modules::Auction:
+			_module = init_module<mod_auction>(g_data); break;
+		case modules::Music:
+			_module = init_module<mod_music>(g_data); break;
+		case modules::Announcer:
+			_module = init_module<mod_announcer>(g_data); break;
+		case modules::Autoresponder:
+			_module = init_module<mod_autoresponder>(g_data); break;
+		case modules::Autoroles:
+			_module = init_module<mod_autoroles>(g_data); break;
+		case modules::Moderation:
+			_module = init_module<mod_moderation>(g_data); break;
+		case modules::Tags:
+			_module = init_module<mod_tag>(g_data); break;
+		case modules::Log:
+			_module = init_module<mod_log>(g_data); break;
+		case modules::Automod:
+			_module = init_module<mod_automod>(g_data); break;
+		case modules::Bansync:
+			_module = init_module<mod_bansync>(g_data); break;
+		case modules::Globalbanlist:
+			_module = init_module<mod_globalbanlist>(g_data); break;
+		}
+		if (!_module)
+			throw std::runtime_error(fmt::format("{} invalid module id - guild_id [{}].", mod, g_data.guild_id));
+		_modules.emplace(mod, _module);
         g_data._modules[mod]->enabled = toggle;
         g_data._modules[mod]->load(*this);
     }
@@ -2007,11 +2380,11 @@ std::string AegisBot::result_action(const std::string_view action, const std::ve
     catch (std::exception & e)
     {
         //reconstruct query
-        fmt::MemoryWriter w;
+        std::stringstream w;
         w << action;
         for (auto & v : value)
             w << ' ' << v;
-        bot.log->error("E: {} || {}", e.what(), w.str());
+        _bot->log->error("E: {} || {}", e.what(), w.str());
     }
     return {};
 }
@@ -2042,15 +2415,16 @@ std::string AegisBot::result_action(const std::string_view action, const std::st
     catch (std::exception & e)
     {
         //reconstruct query
-        fmt::MemoryWriter w;
+        std::stringstream w;
         w << action;
         for (auto & v : value)
             w << ' ' << v;
-        bot.log->error("E: {} || {}", e.what(), w.str());
+        _bot->log->error("E: {} || {}", e.what(), w.str());
     }
     return {};
 }
 
+/*
 std::future<std::string> AegisBot::async_get_result(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
 {
     using result = asio::async_result<asio::use_future_t<>, void(std::string)>;
@@ -2065,19 +2439,19 @@ std::future<std::string> AegisBot::async_get_result(const std::string_view actio
     }));
 
     return ret.get();
-}
+}*/
 
-std::future<aegis::rest::rest_reply> AegisBot::req_success(aegis::gateway::objects::message & msg)
+aegis::future<aegis::rest::rest_reply> AegisBot::req_success(aegis::gateway::objects::message & msg)
 {
     return msg.create_reaction("success:429554838083207169");
 }
 
-std::future<aegis::rest::rest_reply> AegisBot::req_fail(aegis::gateway::objects::message & msg)
+aegis::future<aegis::rest::rest_reply> AegisBot::req_fail(aegis::gateway::objects::message & msg)
 {
     return msg.create_reaction("fail:429554869611921408");
 }
 
-std::future<aegis::rest::rest_reply> AegisBot::req_permission(aegis::gateway::objects::message & msg)
+aegis::future<aegis::rest::rest_reply> AegisBot::req_permission(aegis::gateway::objects::message & msg)
 {
     return msg.create_reaction("no_permission:451495171779985438");
 }
@@ -2092,10 +2466,10 @@ bool AegisBot::srem(const std::string_view key, const std::vector<std::string> &
     return basic_action("SREM", fmt::format("{}:{}", g_data.redis_prefix, key), value);
 }
 
-bool AegisBot::basic_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value)
+bool AegisBot::basic_action(const std::string_view action, const std::string_view key, std::vector<std::string> value)
 {
-    asio::post(_io_service, asio::bind_executor(strand, [this, key = std::string{ key }, action = std::string{ action }, value = std::move(value)]()
-    {
+//     asio::post(_io_service, asio::bind_executor(strand, [this, key = std::string{ key }, action = std::string{ action }, value = std::move(value)]()
+//     {
         std::lock_guard<std::mutex> lock(r_mutex);
         try
         {
@@ -2106,7 +2480,7 @@ bool AegisBot::basic_action(const std::string_view action, const std::string_vie
                 v.emplace_back(k.data());
             result = redis.command(std::string{ action }, v);
             if (result.isOk())
-                return;
+                return true;
             else if (result.isError())
             {
                 std::stringstream ss;
@@ -2119,16 +2493,16 @@ bool AegisBot::basic_action(const std::string_view action, const std::string_vie
         }
         catch (std::exception & e)
         {
-            bot.log->error("E: {}", e.what());
+            _bot->log->error("E: {}", e.what());
         }
-    }));
+//     }));
     return true;
 }
 
-bool AegisBot::basic_action(const std::string_view action, const std::vector<std::string> & value)
+bool AegisBot::basic_action(const std::string_view action, std::vector<std::string> value)
 {
-    asio::post(_io_service, asio::bind_executor(strand, [this, action = std::string{ action }, value = std::move(value)]()
-    {
+//     asio::post(_io_service, asio::bind_executor(strand, [this, action = std::string{ action }, value = std::move(value)]()
+//     {
         try
         {
             std::lock_guard<std::mutex> lock(r_mutex);
@@ -2136,13 +2510,13 @@ bool AegisBot::basic_action(const std::string_view action, const std::vector<std
             std::deque<redisclient::RedisBuffer> v;
             for (auto & k : value)
                 v.emplace_back(k.data());
-            result = redis.command(std::string{ action }, v);
+            result = redis.command(std::string{ action }, std::move(v));
         }
         catch (std::exception & e)
         {
-            bot.log->error("E: {}", e.what());
+            _bot->log->error("E: {}", e.what());
         }
-    }));
+//     }));
     return true;
 }
 
@@ -2157,7 +2531,7 @@ void AegisBot::event_log(const json & j, const std::string & path)
         rp.path = "/test" + path;
 
     rp.body = j.dump();
-    bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+    _bot->get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
 }
 
 bool AegisBot::valid_command(std::string_view cmd)
@@ -2217,12 +2591,12 @@ void AegisBot::GuildDelete(aegis::gateway::events::guild_delete obj)
   
     aegis::snowflake & guild_id = obj.guild_id;
 
-    auto & g_data = guild_data[guild_id];
+    auto & g_data = get_guild(guild_id);
 
-    auto _guild = bot.find_guild(guild_id);
+    auto _guild = _bot->find_guild(guild_id);
     if (_guild == nullptr)
     {
-        bot.log->critical("Guild Delete: [{}] does not exist", guild_id);
+        _bot->log->critical("Guild Delete: [{}] does not exist", guild_id);
         //this should never happen
         return;
     }
@@ -2246,10 +2620,18 @@ Guild & AegisBot::get_guild(aegis::snowflake id)
     auto it = guild_data.find(id);
     if (it == guild_data.end())
     {
-        auto a = guild_data.emplace(id, Guild());
+        auto a = guild_data.emplace(id, Guild(*this));
         return a.first->second;
     }
     return it->second;
+}
+
+Guild * AegisBot::find_guild(aegis::snowflake id)
+{
+    auto it = guild_data.find(id);
+    if (it == guild_data.end())
+        return nullptr;
+    return &it->second;
 }
 
 void AegisBot::UserUpdate(aegis::gateway::events::user_update obj)
@@ -2277,31 +2659,32 @@ void AegisBot::UserUpdate(aegis::gateway::events::user_update obj)
 
 void AegisBot::Ready(aegis::gateway::events::ready obj)
 {
-    shards[obj._shard->get_id()].last_message = std::chrono::steady_clock::now();
+    std::cout << fmt::format("READY id:{} size:{}", obj.shard.get_id(), this->shards.size()) << '\n';
+    this->shards[obj.shard.get_id()].last_message = std::chrono::steady_clock::now();
 
     json j;
-    j["shard:connects"] = 1;
+    j["ready"] = 1;
     event_log(j, "/shards");
 }
 
 void AegisBot::Resumed(aegis::gateway::events::resumed obj)
 {
-    shards[obj._shard->get_id()].last_message = std::chrono::steady_clock::now();
+    this->shards[obj.shard.get_id()].last_message = std::chrono::steady_clock::now();
 
     json j;
-    j["shard:resumes"] = 1;
+    j["resume"] = 1;
     event_log(j, "/shards");
 }
 
 void AegisBot::ChannelCreate(aegis::gateway::events::channel_create obj)
 {
-    if (obj._channel.type == aegis::gateway::objects::channel::DirectMessage)
+    if (obj.channel.type == aegis::gateway::objects::channel::DirectMessage)
     {
-        auto it = dm_channels.find(obj._channel.recipients.at(0).id);
+        auto it = dm_channels.find(obj.channel.recipients.at(0).id);
         if (it == dm_channels.end())
         {
-            dm_channels.emplace(obj._channel.recipients.at(0).id, obj._channel.channel_id);
-            hset({ "config:dms", std::to_string(obj._channel.recipients.at(0).id), std::to_string(obj._channel.channel_id) });
+            dm_channels.emplace(obj.channel.recipients.at(0).id, obj.channel.channel_id);
+            hset({ "config:dms", std::to_string(obj.channel.recipients.at(0).id), std::to_string(obj.channel.channel_id) });
         }
     }
 }
@@ -2346,16 +2729,16 @@ void AegisBot::GuildBanRemove(aegis::gateway::events::guild_ban_remove obj)
 
 void AegisBot::GuildMemberAdd(aegis::gateway::events::guild_member_add obj)
 {
-    if (obj._member._user.id > 0)
+    if (obj.member._user.id > 0)
     {
-        aegis::snowflake guild_id = obj._member.guild_id;
+        aegis::snowflake guild_id = obj.member.guild_id;
         Guild & g_data = get_guild(guild_id);
 
-        std::string user_key{ fmt::format("{}:{}", r_m_config, obj._member._user.id) };
-        std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, obj._member._user.id, guild_id) };
+        std::string user_key{ fmt::format("{}:{}", r_m_config, obj.member._user.id) };
+        std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, obj.member._user.id, guild_id) };
 
-        auto & m = obj._member._user;
-        auto & md = obj._member;
+        auto & m = obj.member._user;
+        auto & md = obj.member;
 
         {
             auto sdm_ch = dm_channels.find(md._user.id);
@@ -2400,7 +2783,7 @@ void AegisBot::GuildMemberAdd(aegis::gateway::events::guild_member_add obj)
 
         if (!md.roles.empty())
         {
-            std::string roles_key{ fmt::format("{}:{}:guild:{}:roles", r_m_config, obj._member._user.id, guild_id) };
+            std::string roles_key{ fmt::format("{}:{}:guild:{}:roles", r_m_config, obj.member._user.id, guild_id) };
 
             del(fmt::format("{}:guild:{}:roles", user_key, guild_id));
 
@@ -2420,15 +2803,15 @@ void AegisBot::GuildMemberRemove(aegis::gateway::events::guild_member_remove obj
 
 void AegisBot::GuildMemberUpdate(aegis::gateway::events::guild_member_update obj)
 {
-    auto & m = obj._user;
+    auto & m = obj.user;
 
     aegis::snowflake guild_id = obj.guild_id;
     Guild & g_data = get_guild(guild_id);
 
     // config:member:id
-    std::string user_key{ fmt::format("{}:{}", r_m_config, obj._user.id) };
+    std::string user_key{ fmt::format("{}:{}", r_m_config, obj.user.id) };
     // config:member:id:guild:guildid
-    std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, obj._user.id, guild_id) };
+    std::string guild_key{ fmt::format("{}:{}:guild:{}", r_m_config, obj.user.id, guild_id) };
 
     // user specific data
     {
@@ -2528,7 +2911,7 @@ void AegisBot::GuildMemberChunk(aegis::gateway::events::guild_members_chunk obj)
             }
         }
     }
-    bot.log->trace("count:{} dura:{}us", obj.members.size(), std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - old_time).count());
+    _bot->log->trace("count:{} dura:{}us", obj.members.size(), std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - old_time).count());
 }
 
 void AegisBot::GuildRoleCreate(aegis::gateway::events::guild_role_create obj)
@@ -2536,7 +2919,7 @@ void AegisBot::GuildRoleCreate(aegis::gateway::events::guild_role_create obj)
     aegis::snowflake guild_id = obj.guild_id;
     Guild & g_data = get_guild(guild_id);
 
-    auto & r = obj._role;
+    auto & r = obj.role;
 
     std::string role_key{ fmt::format("{}:roles:{}", g_data.redis_prefix, r.role_id) };
 
@@ -2566,7 +2949,7 @@ void AegisBot::GuildRoleUpdate(aegis::gateway::events::guild_role_update obj)
     aegis::snowflake guild_id = obj.guild_id;
     Guild & g_data = get_guild(guild_id);
 
-    auto & r = obj._role;
+    auto & r = obj.role;
 
     std::string role_key{ fmt::format("{}:roles:{}", g_data.redis_prefix, r.role_id) };
 
@@ -2618,8 +3001,10 @@ void AegisBot::PresenceUpdate(aegis::gateway::events::presence_update obj)
     statsd.Metric<Count>("presence", 1, 1);
 }
 
-const json AegisBot::make_info_obj(aegis::shards::shard * _shard) const noexcept
+const json AegisBot::make_info_obj(aegis::shards::shard & _shard) const noexcept
 {
+    aegis::core & bot = *_bot;
+
     int64_t guild_count = bot.guilds.size();
     int64_t member_count_unique = bot.members.size();
     int64_t channel_count = bot.channels.size();
@@ -2634,18 +3019,18 @@ const json AegisBot::make_info_obj(aegis::shards::shard * _shard) const noexcept
     std::string guilds = fmt::format("{}", guild_count);
     std::string events = fmt::format("{}", eventsseen);
 
-    fmt::MemoryWriter w;
+    std::stringstream w;
 
 #if defined(DEBUG) || defined(_DEBUG)
-    std::string misc = fmt::format("I am shard # {} of {} running on `{}` in `DEBUG` mode", _shard->get_id()+1, bot.shard_max_count, aegis::utility::platform::get_platform());
+    std::string misc = fmt::format("I am shard # {} of {} running on `{}` in `DEBUG` mode", _shard.get_id(), bot.shard_max_count, aegis::utility::platform::get_platform());
 
-    w << "[Latest bot source](https://github.com/zeroxs/aegis.cpp)\n[Official Bot Server](https://discord.gg/Kv7aP5K)\n\nMemory usage: "
+    w << "[Latest library source](https://github.com/zeroxs/aegis.cpp)\n[Official Bot Server](https://discord.gg/vfS7fcB)\n[Official Library Server](https://discord.gg/Kv7aP5K)\n\nMemory usage: "
         << double(aegis::utility::getCurrentRSS()) / (1024 * 1024) << "MB\nMax Memory: "
         << double(aegis::utility::getPeakRSS()) / (1024 * 1024) << "MB";
 #else
-    std::string misc = fmt::format("I am shard # {} of {} running on `{}`", _shard->get_id(), bot.shard_max_count, aegis::utility::platform::get_platform());
+    std::string misc = fmt::format("I am shard # {} of {} running on `{}`", _shard.get_id(), bot.shard_max_count, aegis::utility::platform::get_platform());
 
-    w << "[Latest bot source](https://github.com/zeroxs/aegis.cpp)\n[Official Bot Server](https://discord.gg/Kv7aP5K)\n\nMemory usage: "
+    w << "[Latest library source](https://github.com/zeroxs/aegis.cpp)\n[Official Bot Server](https://discord.gg/vfS7fcB)\n[Official Library Server](https://discord.gg/Kv7aP5K)\n\nMemory usage: "
         << double(aegis::utility::getCurrentRSS()) / (1024 * 1024) << "MB";
 #endif
 
@@ -2671,6 +3056,64 @@ const json AegisBot::make_info_obj(aegis::shards::shard * _shard) const noexcept
         { "footer",{ { "icon_url", "https://cdn.discordapp.com/emojis/289276304564420608.png" },{ "text", fmt::format("Made in C++{} running {}", CXX_VERSION, AEGIS_VERSION_TEXT) } } }
     };
     return t;
+}
+
+const std::string AegisBot::make_stats_obj(aegis::shards::shard& _shard) const noexcept
+{
+    aegis::core& bot = *_bot;
+#if !defined(AEGIS_MSVC)
+    auto exec = [&](std::string cmd) -> std::string
+    {
+        std::array<char, 128> buffer;
+        std::string result;
+        std::shared_ptr<FILE> pipe(popen(cmd.c_str(), "r"), pclose);
+        if (!pipe)
+        {
+            throw std::runtime_error("_popen() failed!");
+        }
+        while (!feof(pipe.get()))
+        {
+            if (fgets(buffer.data(), 128, pipe.get()) != nullptr)
+                result += buffer.data();
+        }
+        return result;
+    };
+
+    std::string result = exec("uptime");
+#else
+    std::string result = "";
+#endif
+
+    int64_t guild_count = bot.guilds.size();
+    int64_t member_count_unique = bot.members.size();
+    int64_t channel_count = bot.channels.size();
+
+    int64_t eventsseen = 0;
+    int64_t commands = 0;
+
+    for (auto& e : bot.message_count)
+        eventsseen += e.second;
+
+    for (auto& c : command_counters)
+        commands += c.second;
+
+    std::stringstream w;
+    w << fmt::format("I am shard # {} of {} running on `{}`\nMemory: ", _shard.get_id(), bot.shard_max_count, aegis::utility::platform::get_platform());
+#if defined(DEBUG) || defined(_DEBUG)
+
+    //w << "Latest library source <https://github.com/zeroxs/aegis.cpp>\nOfficial Bot Server <https://discord.gg/vfS7fcB>\nOfficial Library Server <https://discord.gg/Kv7aP5K>\n\nMemory usage: "
+    w << double(aegis::utility::getCurrentRSS()) / (1024 * 1024) << "MB\nMax Memory: "
+      << double(aegis::utility::getPeakRSS()) / (1024 * 1024) << "MB\n\n";
+#else
+
+    //w << "Latest library source <https://github.com/zeroxs/aegis.cpp>\nOfficial Bot Server <https://discord.gg/vfS7fcB>\nOfficial Library Server <https://discord.gg/Kv7aP5K>\n\nMemory usage: "
+    w << double(aegis::utility::getCurrentRSS()) / (1024 * 1024) << "MB\n\n";
+#endif
+    w << "Members: " << member_count_unique << "\nChannels: " << channel_count << "\nGuilds: " << guild_count << "\nEvents: " << eventsseen << "\nCommands run: " << run_commands;
+    if (!result.empty())
+        w << "\n\n" << result;
+
+    return w.str();
 }
 
 
@@ -2726,7 +3169,7 @@ const json AegisBot::make_info_obj(aegis::shard * _shard) const noexcept
 #endif
     std::string misc = fmt::format("I am shard {} of {} running on `{}` in `{}` mode", _shard->get_id() + 1, bot.shard_max_count, aegis::utility::platform::get_platform(), build_mode);
 
-    fmt::MemoryWriter w;
+    std::stringstream w;
     w << "[Latest bot source](https://github.com/zeroxs/aegis.cpp)\n[Official Bot Server](https://discord.gg/Kv7aP5K)\n\nMemory usage: "
         << double(aegis::utility::getCurrentRSS()) / (1024 * 1024) << "MB\nMax Memory: "
         << double(aegis::utility::getPeakRSS()) / (1024 * 1024) << "MB";
@@ -2759,12 +3202,12 @@ void AegisBot::VoiceStateUpdate(aegis::gateway::events::voice_state_update obj)
 {
     if (!voice_debug)
         return;
-    bot.log->error("voice_state_update: session({})", obj.session_id);
+    _bot->log->error("voice_state_update: session({})", obj.session_id);
 }
 
 void AegisBot::VoiceServerUpdate(aegis::gateway::events::voice_server_update obj)
 {
     if (!voice_debug)
         return;
-    bot.log->error("voice_server_update: token({}) endpoint({})", obj.token, obj.endpoint);
+    _bot->log->error("voice_server_update: token({}) endpoint({})", obj.token, obj.endpoint);
 }

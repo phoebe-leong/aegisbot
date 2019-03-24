@@ -2,7 +2,7 @@
 // mod_tag.cpp
 // ***********
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -10,6 +10,9 @@
 #include "mod_tag.h"
 #include "AegisBot.h"
 #include <aegis/core.hpp>
+#include <aegis/guild.hpp>
+#include <aegis/channel.hpp>
+#include <aegis/user.hpp>
 
 std::string mod_tag::r_prefix = "tag";
 
@@ -86,7 +89,7 @@ void mod_tag::load(AegisBot & bot)
     }
     catch (std::exception & e)
     {
-        bot.bot.log->error("Exception loading auction module data for guild [{}] e[{}]", g_data.guild_id, e.what());
+        bot._bot->log->error("Exception loading auction module data for guild [{}] e[{}]", g_data.guild_id, e.what());
     }
 };
 
@@ -101,9 +104,9 @@ bool mod_tag::tag(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    aegis::member & _member = sd._member;
-    aegis::channel & _channel = sd._channel;
-    aegis::guild & _guild = sd._guild;
+    aegis::user & _member = sd.user;
+    aegis::channel & _channel = sd.channel;
+    aegis::guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;

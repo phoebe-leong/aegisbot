@@ -2,7 +2,7 @@
 // UserControl.cpp
 // ***************
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -14,15 +14,22 @@
 #include <aegis/impl/channel.cpp>
 #include <aegis/impl/guild.cpp>
 #endif
+#include <aegis/guild.hpp>
+#include <aegis/channel.hpp>
+#include <aegis/user.hpp>
 
 using aegis::snowflake;
-using aegis::member;
+using aegis::user;
 using aegis::channel;
 using aegis::guild;
 using namespace cppdogstatsd;
 
 bool AegisBot::process_user_messages(aegis::gateway::events::message_create & obj, shared_data & sd)
 {
+    //exclusive bot owner admin level commands
+
+    aegis::core & bot = *_bot;
+
     const snowflake & channel_id = sd.channel_id;
     const snowflake & guild_id = sd.guild_id;
     const snowflake & message_id = sd.message_id;
@@ -31,16 +38,14 @@ bool AegisBot::process_user_messages(aegis::gateway::events::message_create & ob
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
 
     std::vector<std::string_view> & toks = sd.toks;
-
-    bool is_guild_owner = (member_id == guild_owner_id || member_id == bot_owner_id);
 
     std::string request{ content };
 
@@ -60,543 +65,525 @@ bool AegisBot::process_user_messages(aegis::gateway::events::message_create & ob
     };
 
 
-    //exclusive bot owner admin level commands
-    if (is_guild_owner)
+    if (toks[0] == "modulelist")
     {
-        if (toks[0] == "modulelist")
+        auto mods_enabled = get_vector(fmt::format("{}:modules", g_data.redis_prefix));
+
+        std::stringstream w_o;
         {
-            auto mods_enabled = get_vector(fmt::format("{}:modules", g_data.redis_prefix));
+            std::stringstream w;
+            w << "Modules enabled in Redis:\n";
 
-            fmt::MemoryWriter w_o;
+            for (const auto& i : mods_enabled)
             {
-                fmt::MemoryWriter w;
-                w << "Modules enabled in Redis:\n";
+                auto res = static_cast<modules>(std::stoi(i));
+                auto it = g_data._modules.find(res);
+                if (it == g_data._modules.end())
+                    continue;
 
-                for (const auto& i : mods_enabled)
-                {
-                    auto res = static_cast<modules>(std::stoi(i));
-                    auto it = g_data._modules.find(res);
-                    if (it == g_data._modules.end())
-                        continue;
-
-                    w << get_module_name(res) << ", ";
-                }
-
-                std::string out = w.str();
-                out.erase(out.size() - 2);
-                w_o << out;
+                w << get_module_name(res) << ", ";
             }
 
-            w_o << "\n\nModules actually enabled:\n";
-
-            for (auto & m : g_data._modules)
-            {
-                if (m.second->enabled)
-                {
-                    w_o << get_module_name(m.first) << ", ";
-                }
-            }
-
-            std::string out = w_o.str();
+            std::string out = w.str();
             out.erase(out.size() - 2);
             w_o << out;
-
-            _channel.create_message(out);
-            return true;
         }
 
-        if (toks[0] == "prefix")
+        w_o << "\n\nModules actually enabled:\n";
+
+        for (auto & m : g_data._modules)
         {
-            if (check_params(toks, 2, "prefix (add|remove|list) [prefix]"))
+            if (m.second->enabled)
+            {
+                w_o << get_module_name(m.first) << ", ";
+            }
+        }
+
+        std::string out = w_o.str();
+        out.erase(out.size() - 2);
+        w_o << out;
+
+        _channel.create_message(out);
+        return true;
+    }
+
+    if (toks[0] == "prefix")
+    {
+        if (check_params(toks, 2, "prefix (add|remove|list) [prefix]"))
+            return true;
+
+        if (toks[1] == "add")
+        {
+            if (check_params(toks, 3, "prefix add `prefix`"))
                 return true;
 
-            if (toks[1] == "add")
-            {
-                if (check_params(toks, 3, "prefix add `prefix`"))
-                    return true;
-
-                g_data.cmd_prefix_list.emplace_back(std::string{ toks[2] });
-                sadd({ fmt::format("{}:prefix", g_data.redis_prefix), std::string{ toks[2] } });
-                req_success(obj.msg);
-            }
-            else if (toks[1] == "remove")
-            {
-                if (check_params(toks, 3, "prefix remove `prefix`"))
-                    return true;
-
-                auto it = std::find(g_data.cmd_prefix_list.begin(), g_data.cmd_prefix_list.end(), std::string{ toks[2] });
-                if (it == g_data.cmd_prefix_list.end())
-                {
-                    req_fail(obj.msg);
-                    return true;
-                }
-
-                g_data.cmd_prefix_list.erase(it);
-
-                srem({ fmt::format("{}:prefix", g_data.redis_prefix), std::string{ toks[2] } });
-                req_success(obj.msg);
-            }
-            else if (toks[1] == "list")
-            {
-                auto res = get_vector({ fmt::format("{}:prefix", g_data.redis_prefix) });
-
-                fmt::MemoryWriter mw;
-                mw << "#1) " << bot.mention << '\n';
-                int i = 2;
-                for (auto & pfx : res)
-                {
-                    mw << fmt::format("#{}) {}\n", i++, pfx);
-                }
-                aegis::gateway::objects::embed e;
-//                 e.set_title("Bot prefixes");
-//                 e.set_description(mw.str());
-//                 e.set_color(0);
-//                 e.set_footer({ "Prefixes", "", "" });
-                _channel.create_message_embed("", e);
-            }
-            return true;
+            g_data.cmd_prefix_list.emplace_back(std::string{ toks[2] });
+            sadd({ fmt::format("{}:prefix", g_data.redis_prefix), std::string{ toks[2] } });
+            req_success(obj.msg);
         }
+        else if (toks[1] == "remove")
+        {
+            if (check_params(toks, 3, "prefix remove `prefix`"))
+                return true;
+
+            auto it = std::find(g_data.cmd_prefix_list.begin(), g_data.cmd_prefix_list.end(), std::string{ toks[2] });
+            if (it == g_data.cmd_prefix_list.end())
+            {
+                req_fail(obj.msg);
+                return true;
+            }
+
+            g_data.cmd_prefix_list.erase(it);
+
+            srem({ fmt::format("{}:prefix", g_data.redis_prefix), std::string{ toks[2] } });
+            req_success(obj.msg);
+        }
+        else if (toks[1] == "list")
+        {
+            auto res = get_vector({ fmt::format("{}:prefix", g_data.redis_prefix) });
+
+            std::stringstream mw;
+            mw << "#1) " << bot.mention << '\n';
+            int i = 1;
+            for (auto & pfx : res)
+            {
+                mw << fmt::format("#{}) {}\n", ++i, pfx);
+            }
+            aegis::gateway::objects::embed e;
+            e.title("Bot prefixes");
+            e.description(mw.str());
+            e.color(0);
+            e.footer({ "Prefixes" });
+            _channel.create_message_embed("", e);
+        }
+        return true;
+    }
  
-        if (toks[0] == "enmod")
-        {
-            if (check_params(toks, 2, "enmod `modname`"))
-                return true;
+    if (toks[0] == "enmod")
+    {
+        if (check_params(toks, 2, "enmod `modname`"))
+            return true;
 
-            for (auto & it : bot_modules)
+        for (auto & it : bot_modules)
+        {
+            if (it.second.name == toks[1])
             {
-                if (it.second.name == toks[1])
-                {
-                    //matched
-                    toggle_mod(g_data, it.first, true);
-                    g_data._modules[it.first]->load(*this);
-                    _channel.create_message(fmt::format("{} enabled.", bot_modules[it.first].name));
-                    return true;
-                }
+                //matched
+                toggle_mod(g_data, it.first, true);
+                g_data._modules[it.first]->load(*this);
+                _channel.create_message(fmt::format("{} enabled.", bot_modules[it.first].name));
+                return true;
             }
-            _channel.create_message(fmt::format("Module `{}` does not exist.", toks[1]));
+        }
+        _channel.create_message(fmt::format("Module `{}` does not exist.", toks[1]));
+        return true;
+    }
+
+    if (toks[0] == "dismod")
+    {
+        if (check_params(toks, 2, "dismod `modname`"))
+            return true;
+
+        for (auto & it : bot_modules)
+        {
+            if (it.second.name == toks[1])
+            {
+                //matched
+                toggle_mod(g_data, it.first, false);
+                _channel.create_message(fmt::format("{} disabled.", bot_modules[it.first].name));
+                return true;
+            }
+        }
+        _channel.create_message(fmt::format("Module `{}` does not exist.", toks[1]));
+        return true;
+    }
+
+    if (toks[0] == "cmd")
+    {
+        if (check_params(toks, 3, "cmd `command` [status|enable|disable|default_access|access_type] [value]"))
+            return true;
+
+        if (!valid_command(toks[1]))
+        {
+            _channel.create_message(fmt::format("Invalid command: {}", toks[1]));
             return true;
         }
 
-        if (toks[0] == "dismod")
-        {
-            if (check_params(toks, 2, "dismod `modname`"))
-                return true;
+        auto & cmd = g_data.cmds[std::string{ toks[1] }];
 
-            for (auto & it : bot_modules)
-            {
-                if (it.second.name == toks[1])
-                {
-                    //matched
-                    toggle_mod(g_data, it.first, false);
-                    _channel.create_message(fmt::format("{} disabled.", bot_modules[it.first].name));
-                    return true;
-                }
-            }
-            _channel.create_message(fmt::format("Module `{}` does not exist.", toks[1]));
+        if (toks[2] == "status")
+        {
+            _channel.create_message(fmt::format("Command status:\nEnabled: {}\nDefault Access: {}\nAccess Type: {}", cmd.enabled ? "true" : "false"
+                                                    , (cmd.default_access == s_command_data::perm_access::Allow ? "Allow" : "Deny")
+                                                    , (cmd.access_type == s_command_data::perm_type::User ? "User" : (cmd.access_type == s_command_data::perm_type::Role ? "Role" : "Internal"))));
             return true;
         }
-
-        if (toks[0] == "cmd")
+        else if (toks[2] == "enable")
         {
-            if (check_params(toks, 3, "cmd `command` [status|enable|disable|default_access|access_type] [value]"))
+            if (check_params(toks, 3))
                 return true;
+            toggle_command(toks[1], _guild.guild_id, true);
+            cmd.enabled = true;
+            _channel.create_message(fmt::format("Successfully enabled command **{}**", toks[1]));
+            return true;
+        }
+        else if (toks[2] == "disable")
+        {
+            if (check_params(toks, 3))
+                return true;
+            toggle_command(toks[1], _guild.guild_id, false);
+            cmd.enabled = false;
+            _channel.create_message(fmt::format("Successfully disabled command **{}**", toks[1]));
+            return true;
+        }
+        else if (toks[2] == "default_access")
+        {
+            if (check_params(toks, 4, "cmd `command` default_access [true|false]"))
+                return true;
+            std::string res;
+            if (toks[3] == "true")
+            {
+                res = "1";
+                cmd.default_access = s_command_data::perm_access::Allow;
+            }
+            else
+            {
+                res = "0";
+                cmd.default_access = s_command_data::perm_access::Deny;
+            }
+            hset({ fmt::format("{}:cmds:{}", g_data.redis_prefix, toks[1]), "default_access", res });
+            _channel.create_message(fmt::format("Successfully set **default_access** to `{}`", res == "1" ? "true" : "false"));
+            return true;
+        }
+        else if (toks[2] == "access_type")
+        {
+            if (check_params(toks, 4, "cmd `command` access_type [user|role]"))
+                return true;
+            std::string res;
+            if (toks[3] == "user")
+            {
+                res = "0";
+                cmd.access_type = s_command_data::perm_type::User;
+            }
+            if (toks[3] == "role")
+            {
+                res = "1";
+                cmd.access_type = s_command_data::perm_type::Role;
+            }
+            else if (toks[3] == "internal")
+            {
+                res = "2";
+                cmd.access_type = s_command_data::perm_type::Internal;
+            }
+            hset({ fmt::format("{}:cmds:{}", g_data.redis_prefix, toks[1]), "access_type", res });
+            _channel.create_message(fmt::format("Successfully set **access_type** to `{}`", (res == "0" ? "user" : (res == "1" ? "role" : "internal"))));
+            return true;
+        }
+    }
 
-            if (!valid_command(toks[1]))
-            {
-                _channel.create_message(fmt::format("Invalid command: {}", toks[1]));
-                return true;
-            }
+    if (toks[0] == "set")
+    {
+        if (check_params(toks, 3, "set `option` value"))
+            return true;
 
-            auto & cmd = g_data.cmds[std::string{ toks[1] }];
-
-            if (toks[2] == "status")
+        if (toks[1] == "ignorebots")
+        {
+            if ((toks[2] == "true") || (toks[2] == "yes") || (toks[2] == "on"))
             {
-                _channel.create_message(fmt::format("Command status:\nEnabled: {}\nDefault Access: {}\nAccess Type: {}", cmd.enabled ? "true" : "false"
-                                                     , (cmd.default_access == s_command_data::perm_access::Allow ? "Allow" : "Deny")
-                                                     , (cmd.access_type == s_command_data::perm_type::User ? "User" : (cmd.access_type == s_command_data::perm_type::Role ? "Role" : "Internal"))));
-                return true;
-            }
-            else if (toks[2] == "enable")
-            {
-                if (check_params(toks, 3))
-                    return true;
-                toggle_command(toks[1], _guild.guild_id, true);
-                cmd.enabled = true;
-                _channel.create_message(fmt::format("Successfully enabled command **{}**", toks[1]));
-                return true;
-            }
-            else if (toks[2] == "disable")
-            {
-                if (check_params(toks, 3))
-                    return true;
-                toggle_command(toks[1], _guild.guild_id, false);
-                cmd.enabled = false;
-                _channel.create_message(fmt::format("Successfully disabled command **{}**", toks[1]));
-                return true;
-            }
-            else if (toks[2] == "default_access")
-            {
-                if (check_params(toks, 4, "cmd `command` default_access [true|false]"))
-                    return true;
-                std::string res;
-                if (toks[3] == "true")
-                {
-                    res = "1";
-                    cmd.default_access = s_command_data::perm_access::Allow;
-                }
+                g_data.ignore_bots = true;
+                if (hset({ g_data.redis_prefix, "ignorebots", "1" }))
+                    _channel.create_message("Ignoring bot messages.");
                 else
-                {
-                    res = "0";
-                    cmd.default_access = s_command_data::perm_access::Deny;
-                }
-                hset({ fmt::format("{}:cmds:{}", g_data.redis_prefix, toks[1]), "default_access", res });
-                _channel.create_message(fmt::format("Successfully set **default_access** to `{}`", res == "1" ? "true" : "false"));
+                    _channel.create_message("Ignoring bot messages (with errors).");
                 return true;
             }
-            else if (toks[2] == "access_type")
+            else if ((toks[2] == "false") || (toks[2] == "no") || (toks[2] == "off"))
             {
-                if (check_params(toks, 4, "cmd `command` access_type [user|role]"))
-                    return true;
-                std::string res;
-                if (toks[3] == "user")
-                {
-                    res = "0";
-                    cmd.access_type = s_command_data::perm_type::User;
-                }
-                if (toks[3] == "role")
-                {
-                    res = "1";
-                    cmd.access_type = s_command_data::perm_type::Role;
-                }
-                else if (toks[3] == "internal")
-                {
-                    res = "2";
-                    cmd.access_type = s_command_data::perm_type::Internal;
-                }
-                hset({ fmt::format("{}:cmds:{}", g_data.redis_prefix, toks[1]), "access_type", res });
-                _channel.create_message(fmt::format("Successfully set **access_type** to `{}`", (res == "0" ? "user" : (res == "1" ? "role" : "internal"))));
+                g_data.ignore_bots = false;
+                if (hset({ g_data.redis_prefix, "ignorebots", "0" }))
+                    _channel.create_message("No longer ignoring bot messages.");
+                else
+                    _channel.create_message("No longer ignoring bot messages (with errors).");
                 return true;
             }
         }
+        return false;
+    }
 
-        if (toks[0] == "set")
+    if (toks[0] == "perm")
+    {
+        if (check_params(toks, 2, "perm `command` [user|role] [add|rem|clear] [`id` [allow|deny]]"))
+            return true;
+
+        if (toks[1] == "list")
         {
-            if (check_params(toks, 3, "set `option` value"))
-                return true;
+            json entries;
 
-            if (toks[1] == "ignorebots")
+            for (auto &[k, v] : g_data.cmds)
             {
-                if ((toks[2] == "true") || (toks[2] == "yes") || (toks[2] == "on"))
-                {
-                    g_data.ignore_bots = true;
-                    if (hset({ g_data.redis_prefix, "ignorebots", "1" }))
-                        _channel.create_message("Ignoring bot messages.");
-                    else
-                        _channel.create_message("Ignoring bot messages (with errors).");
-                    return true;
-                }
-                else if ((toks[2] == "false") || (toks[2] == "no") || (toks[2] == "off"))
-                {
-                    g_data.ignore_bots = false;
-                    if (hset({ g_data.redis_prefix, "ignorebots", "0" }))
-                        _channel.create_message("No longer ignoring bot messages.");
-                    else
-                        _channel.create_message("No longer ignoring bot messages (with errors).");
-                    return true;
-                }
-            }
-            return false;
-        }
+                std::stringstream r_p;
 
-        if (toks[0] == "perm")
-        {
-            if (check_params(toks, 2, "perm `command` [user|role] [add|rem|clear] [`id` [allow|deny]]"))
-                return true;
-
-            if (toks[1] == "list")
-            {
-                json entries;
-
-                for (auto &[k, v] : g_data.cmds)
-                {
-                    std::stringstream r_p;
-
-                    r_p << "User\n";
-                    for (auto & e : v.user_perms)
-                        r_p << e.first << " | " << e.second << '\n';
-                    r_p << "\nRole\n";
-                    for (auto & e : v.role_perms)
-                        r_p << e.first << " | " << e.second << '\n';
+                r_p << "User\n";
+                for (auto & e : v.user_perms)
+                    r_p << e.first << " | " << e.second << '\n';
+                r_p << "\nRole\n";
+                for (auto & e : v.role_perms)
+                    r_p << e.first << " | " << e.second << '\n';
 //                     r_p << "\nInternal\n";
 //                     for (auto & e : v.int_perms)
 //                         r_p << e.first << " | " << e.second << '\n';
 
-                    entries.emplace_back(json({ { "name", k },{ "value", r_p.str() },{ "inline", true } }));
-                }
-
-                if (entries.empty())
-                    entries.emplace_back(json({ { "name", "No permissions set" },{ "value", "n\\a" },{ "inline", true } }));
-
-                json t = {
-                    { "title", "Permission list" },
-                    { "color", 10599460 },
-                    { "fields", entries },
-                    { "footer",{ { "icon_url", "https://cdn.discordapp.com/emojis/289276304564420608.png" },{ "text", "AegisBot" } } }
-                };
-                _channel.create_message_embed({}, t);
-                return true;
+                entries.emplace_back(json({ { "name", k },{ "value", r_p.str() },{ "inline", true } }));
             }
 
-            if (check_params(toks, 4, "perm `command` [user|role] [add|rem|clear] [`id` [allow|deny]]"))
-                return true;
+            if (entries.empty())
+                entries.emplace_back(json({ { "name", "No permissions set" },{ "value", "n\\a" },{ "inline", true } }));
 
-            std::string cmd{ toks[1] };
-            std::string type{ toks[2] };
-
-            if (toks[3] == "add")
-            {
-                if (check_params(toks, 6, "perm `command` [user|role] add `id` allow|deny"))
-                    return true;
-                auto new_mem = get_snowflake(std::string{ toks[4] }, _guild);
-                if (type == "user")
-                {
-                    //auto & new_user = bot.get_member_by_any(new_mem);
-                    if (new_mem == 0)
-                    {
-                        _channel.create_message(fmt::format("Failed to find **user** `{}`", new_mem, cmd));
-                        return true;
-                    }
-                    if (toks[5] == "allow")
-                    {
-                        g_data.cmds[cmd].user_perms[new_mem] = s_command_data::perm_access::Allow;
-                        hset({ fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_mem), "1" });
-                        _channel.create_message(fmt::format("Successfully added **user** `{}` allow perms to command `{}`", new_mem, cmd));
-                    }
-                    else if (toks[5] == "deny")
-                    {
-                        g_data.cmds[cmd].user_perms[new_mem] = s_command_data::perm_access::Deny;
-                        hset({ fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_mem), "0" });
-                        _channel.create_message(fmt::format("Successfully added **user** `{}` deny perms to command `{}`", new_mem, cmd));
-                    }
-                }
-                else if (type == "role")
-                {
-                    std::shared_lock<std::shared_mutex> l(_guild.mtx());
-                    auto it = _guild.get_roles().find(new_mem);
-                    if (it == _guild.get_roles().end())
-                    {
-                        _channel.create_message(fmt::format("Role `{}` does not exist", new_mem));
-                        return true;
-                    }
-                    auto & new_role = it->second;
-                    if (toks[5] == "allow")
-                    {
-                        g_data.cmds[cmd].role_perms[new_mem] = s_command_data::perm_access::Allow;
-                        hset({ fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_role.role_id), "1" });
-                        _channel.create_message(fmt::format("Successfully added **role** `{}` allow perms to command `{}`", new_mem, cmd));
-                    }
-                    else if (toks[5] == "deny")
-                    {
-                        g_data.cmds[cmd].role_perms[new_mem] = s_command_data::perm_access::Deny;
-                        hset({ fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_role.role_id), "0" });
-                        _channel.create_message(fmt::format("Successfully added **role** `{}` deny perms to command `{}`", new_mem, cmd));
-                    }
-                }
-                else if (type == "internal")
-                {
-                    auto it = g_data.ranks.find(new_mem);
-                    if (it == g_data.ranks.end())
-                    {
-                        _channel.create_message(fmt::format("Internal **rank** `{}` does not exist", new_mem));
-                        return true;
-                    }
-                    auto & new_int_role = it->second;
-                    if (toks[5] == "allow")
-                    {
-                        g_data.cmds[cmd].int_perms[new_mem] = s_command_data::perm_access::Allow;
-                        hset({ fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_int_role.rank_id), "1" });
-                        _channel.create_message(fmt::format("Successfully added **internal** `{}` allow perms to command `{}`", new_mem, cmd));
-                    }
-                    else if (toks[5] == "deny")
-                    {
-                        g_data.cmds[cmd].int_perms[new_mem] = s_command_data::perm_access::Deny;
-                        hset({ fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_int_role.rank_id), "0" });
-                        _channel.create_message(fmt::format("Successfully added **internal** `{}` deny perms to command `{}`", new_mem, cmd));
-                    }
-                }
-            }
-            if (toks[3] == "rem")
-            {
-                if (check_params(toks, 6, "perm `command` [user|role] rem `id`"))
-                    return true;
-                auto new_mem = get_snowflake(toks[4], _guild);
-                if (type == "user")
-                {
-                    //auto & new_user = bot.get_member_by_any(new_mem);
-                    hdel({ fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_mem) });
-                    _channel.create_message(fmt::format("Successfully removed **user** `{}` allow perms from command `{}`", new_mem, cmd));
-                }
-                else if (type == "role")
-                {
-                    std::shared_lock<std::shared_mutex> l(_guild.mtx());
-                    auto it = _guild.get_roles().find(new_mem);
-                    if (it == _guild.get_roles().end())
-                    {
-                        _channel.create_message(fmt::format("Role `{}` does not exist", new_mem));
-                        return true;
-                    }
-                    auto & new_role = it->second;
-                    hdel({ fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_role.role_id), "1" });
-                    _channel.create_message(fmt::format("Successfully removed **role** `{}` allow perms from command `{}`", new_mem, cmd));
-                }
-                else if (type == "internal")
-                {
-                    auto it = g_data.ranks.find(new_mem);
-                    if (it == g_data.ranks.end())
-                    {
-                        _channel.create_message(fmt::format("Internal **rank** `{}` does not exist", new_mem));
-                        return true;
-                    }
-                    auto & new_int_role = it->second;
-                    hdel({ fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_int_role.rank_id), "1" });
-                    _channel.create_message(fmt::format("Successfully removed **internal** `{}` allow perms from command `{}`", new_mem, cmd));
-                }
-            }
-            if (toks[3] == "clear")
-            {
-                if (!check_params(toks, 4, "perm `command` [user|role] [add|rem|clear] [`id` [allow|deny]]"))
-                    return true;
-                if (type == "user")
-                {
-                    g_data.cmds[cmd].user_perms.clear();
-                    if (del(fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd)))
-                        _channel.create_message(fmt::format("Successfully wiped **user** list for command `{}`", cmd));
-                }
-                else if (type == "role")
-                {
-                    g_data.cmds[cmd].role_perms.clear();
-                    if (del(fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd)))
-                        _channel.create_message(fmt::format("Successfully wiped **role** list for command `{}`", cmd));
-                }
-                else if (type == "internal")
-                {
-                    g_data.cmds[cmd].int_perms.clear();
-                    if (del(fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd)))
-                        _channel.create_message(fmt::format("Successfully wiped **internal** list for command `{}`", cmd));
-                }
-            }
+            json t = {
+                { "title", "Permission list" },
+                { "color", 10599460 },
+                { "fields", entries },
+                { "footer",{ { "icon_url", "https://cdn.discordapp.com/emojis/289276304564420608.png" },{ "text", "AegisBot" } } }
+            };
+            _channel.create_message_embed({}, t);
             return true;
         }
 
-        if (toks[0] == "kick")
-        {
-            if (check_params(toks, 2, "kick `user`"))
-                return true;
-            
-            snowflake tar = get_snowflake(toks[1], _guild);
-            if (tar == 0)
-            {
-                _channel.create_message(fmt::format("User not found: {}", toks[1].data()));
-            }
+        if (check_params(toks, 4, "perm `command` [user|role] [add|rem|clear] [`id` [allow|deny]]"))
+            return true;
 
-            statsd.Metric<Count>("kicks", 1, 1);
-            if (auto reply = _guild.remove_guild_member(tar).get(); !reply)
-                _channel.create_message(fmt::format("Unable to kick: {}", toks[1].data()));
-            else
+        std::string cmd{ toks[1] };
+        std::string type{ toks[2] };
+
+        if (toks[3] == "add")
+        {
+            if (check_params(toks, 6, "perm `command` [user|role] add `id` allow|deny"))
+                return true;
+            auto new_mem = get_snowflake(std::string{ toks[4] }, _guild);
+            if (type == "user")
             {
-                auto tmem = obj.bot->find_member(tar);
-                if (!tmem)
-                    _channel.create_message(fmt::format("Kicked: {}", toks[1].data()));
-                else
-                    _channel.create_message(fmt::format("Kicked: <@{}>", tar));
+                //auto & new_user = bot.get_member_by_any(new_mem);
+                if (new_mem == 0)
+                {
+                    _channel.create_message(fmt::format("Failed to find **user** `{}`", new_mem, cmd));
+                    return true;
+                }
+                if (toks[5] == "allow")
+                {
+                    g_data.cmds[cmd].user_perms[new_mem] = s_command_data::perm_access::Allow;
+                    hset({ fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_mem), "1" });
+                    _channel.create_message(fmt::format("Successfully added **user** `{}` allow perms to command `{}`", new_mem, cmd));
+                }
+                else if (toks[5] == "deny")
+                {
+                    g_data.cmds[cmd].user_perms[new_mem] = s_command_data::perm_access::Deny;
+                    hset({ fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_mem), "0" });
+                    _channel.create_message(fmt::format("Successfully added **user** `{}` deny perms to command `{}`", new_mem, cmd));
+                }
+            }
+            else if (type == "role")
+            {
+                std::shared_lock<std::shared_mutex> l(_guild.mtx());
+                auto it = _guild.get_roles().find(new_mem);
+                if (it == _guild.get_roles().end())
+                {
+                    _channel.create_message(fmt::format("Role `{}` does not exist", new_mem));
+                    return true;
+                }
+                auto & new_role = it->second;
+                if (toks[5] == "allow")
+                {
+                    g_data.cmds[cmd].role_perms[new_mem] = s_command_data::perm_access::Allow;
+                    hset({ fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_role.role_id), "1" });
+                    _channel.create_message(fmt::format("Successfully added **role** `{}` allow perms to command `{}`", new_mem, cmd));
+                }
+                else if (toks[5] == "deny")
+                {
+                    g_data.cmds[cmd].role_perms[new_mem] = s_command_data::perm_access::Deny;
+                    hset({ fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_role.role_id), "0" });
+                    _channel.create_message(fmt::format("Successfully added **role** `{}` deny perms to command `{}`", new_mem, cmd));
+                }
+            }
+            else if (type == "internal")
+            {
+                auto it = g_data.ranks.find(new_mem);
+                if (it == g_data.ranks.end())
+                {
+                    _channel.create_message(fmt::format("Internal **rank** `{}` does not exist", new_mem));
+                    return true;
+                }
+                auto & new_int_role = it->second;
+                if (toks[5] == "allow")
+                {
+                    g_data.cmds[cmd].int_perms[new_mem] = s_command_data::perm_access::Allow;
+                    hset({ fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_int_role.rank_id), "1" });
+                    _channel.create_message(fmt::format("Successfully added **internal** `{}` allow perms to command `{}`", new_mem, cmd));
+                }
+                else if (toks[5] == "deny")
+                {
+                    g_data.cmds[cmd].int_perms[new_mem] = s_command_data::perm_access::Deny;
+                    hset({ fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_int_role.rank_id), "0" });
+                    _channel.create_message(fmt::format("Successfully added **internal** `{}` deny perms to command `{}`", new_mem, cmd));
+                }
             }
         }
-
-        if (toks[0] == "ban")
+        if (toks[3] == "rem")
         {
-            if (check_params(toks, 2, "ban `user`"))
+            if (check_params(toks, 6, "perm `command` [user|role] rem `id`"))
                 return true;
-
-            snowflake tar = get_snowflake(toks[1], _guild);
-            if (tar == 0)
+            auto new_mem = get_snowflake(toks[4], _guild);
+            if (type == "user")
             {
-                _channel.create_message(fmt::format("User not found: {}", toks[1].data()));
+                //auto & new_user = bot.get_member_by_any(new_mem);
+                hdel({ fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_mem) });
+                _channel.create_message(fmt::format("Successfully removed **user** `{}` allow perms from command `{}`", new_mem, cmd));
             }
+            else if (type == "role")
+            {
+                std::shared_lock<std::shared_mutex> l(_guild.mtx());
+                auto it = _guild.get_roles().find(new_mem);
+                if (it == _guild.get_roles().end())
+                {
+                    _channel.create_message(fmt::format("Role `{}` does not exist", new_mem));
+                    return true;
+                }
+                auto & new_role = it->second;
+                hdel({ fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_role.role_id), "1" });
+                _channel.create_message(fmt::format("Successfully removed **role** `{}` allow perms from command `{}`", new_mem, cmd));
+            }
+            else if (type == "internal")
+            {
+                auto it = g_data.ranks.find(new_mem);
+                if (it == g_data.ranks.end())
+                {
+                    _channel.create_message(fmt::format("Internal **rank** `{}` does not exist", new_mem));
+                    return true;
+                }
+                auto & new_int_role = it->second;
+                hdel({ fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd), fmt::format("{}", new_int_role.rank_id), "1" });
+                _channel.create_message(fmt::format("Successfully removed **internal** `{}` allow perms from command `{}`", new_mem, cmd));
+            }
+        }
+        if (toks[3] == "clear")
+        {
+            if (!check_params(toks, 4, "perm `command` [user|role] [add|rem|clear] [`id` [allow|deny]]"))
+                return true;
+            if (type == "user")
+            {
+                g_data.cmds[cmd].user_perms.clear();
+                if (del(fmt::format("{}:cmds:{}:u_perms", g_data.redis_prefix, cmd)))
+                    _channel.create_message(fmt::format("Successfully wiped **user** list for command `{}`", cmd));
+            }
+            else if (type == "role")
+            {
+                g_data.cmds[cmd].role_perms.clear();
+                if (del(fmt::format("{}:cmds:{}:r_perms", g_data.redis_prefix, cmd)))
+                    _channel.create_message(fmt::format("Successfully wiped **role** list for command `{}`", cmd));
+            }
+            else if (type == "internal")
+            {
+                g_data.cmds[cmd].int_perms.clear();
+                if (del(fmt::format("{}:cmds:{}:i_perms", g_data.redis_prefix, cmd)))
+                    _channel.create_message(fmt::format("Successfully wiped **internal** list for command `{}`", cmd));
+            }
+        }
+        return true;
+    }
 
-            statsd.Metric<Count>("bans", 1, 1);
-            if (auto reply = _guild.create_guild_ban(tar, 7).get(); !reply)
-                _channel.create_message(fmt::format("Unable to ban: {}", toks[1].data()));
+    if (toks[0] == "kick")
+    {
+        if (check_params(toks, 2, "kick `user`"))
+            return true;
+            
+        snowflake tar = get_snowflake(toks[1], _guild);
+        if (tar == 0)
+        {
+            _channel.create_message(fmt::format("User not found: {}", toks[1].data()));
+        }
+
+        statsd.Metric<Count>("kicks", 1, 1);
+        if (auto reply = _guild.remove_guild_member(tar).get(); !reply)
+            _channel.create_message(fmt::format("Unable to kick: {}", toks[1].data()));
+        else
+        {
+            auto tmem = bot.find_user(tar);
+            if (!tmem)
+                _channel.create_message(fmt::format("Kicked: {}", toks[1].data()));
+            else
+                _channel.create_message(fmt::format("Kicked: <@{}>", tar));
+        }
+    }
+
+    if (toks[0] == "ban")
+    {
+        if (check_params(toks, 2, "ban `user` [reason]"))
+            return true;
+
+        snowflake tar = get_snowflake(toks[1], _guild);
+        std::string reason;
+        if (tar == 0)
+        {
+            _channel.create_message(fmt::format("User not found: {}", toks[1].data()));
+            return true;
+        }
+
+        if (toks.size() > 2)
+            reason = toks[2].data();
+
+        statsd.Metric<Count>("bans", 1, 1);
+        if (auto reply = _guild.create_guild_ban(tar, 0, reason).get(); !reply)
+            _channel.create_message(fmt::format("Unable to ban: {}", toks[1].data()));
+        else
+        {
+            auto tmem = bot.find_user(tar);
+            if (!tmem)
+                _channel.create_message(fmt::format("Banned: {}", toks[1].data()));
+            else
+                _channel.create_message(fmt::format("Banned: <@{}>", tar));
+        }
+        return true;
+    }
+
+    if (toks[0] == "softban")
+    {
+        if (check_params(toks, 2, "softban `user` [reason]"))
+            return true;
+
+        snowflake tar = get_snowflake(toks[1].data(), _guild);
+        std::string reason;
+        if (tar == 0)
+        {
+            _channel.create_message(fmt::format("User not found: {}", toks[1].data()));
+            return true;
+        }
+
+        if (toks.size() > 2)
+            reason = toks[2].data();
+
+        statsd.Metric<Count>("softbans", 1, 1);
+        if (auto reply = _guild.create_guild_ban(tar, 1, reason).get(); !reply)
+            _channel.create_message(fmt::format("Unable to softban: {}", toks[1].data()));
+        else
+        {
+            auto tmem = bot.find_user(tar);
+            if (auto remove_reply = _guild.remove_guild_ban(tar).get(); !remove_reply)
+            {
+                if (!tmem)
+                    _channel.create_message(fmt::format("Softbanned: {}", toks[1].data()));
+                else
+                    _channel.create_message(fmt::format("Softbanned: <@{}>", tar));
+            }
             else
             {
-                auto tmem = obj.bot->find_member(tar);
                 if (!tmem)
                     _channel.create_message(fmt::format("Banned: {}", toks[1].data()));
                 else
                     _channel.create_message(fmt::format("Banned: <@{}>", tar));
             }
-            return true;
         }
-
-        if (toks[0] == "softban")
-        {
-            if (check_params(toks, 2, "softban `user`"))
-                return true;
-
-            snowflake tar = get_snowflake(toks[1].data(), _guild);
-            if (tar == 0)
-            {
-                _channel.create_message(fmt::format("User not found: {}", toks[1].data()));
-            }
-
-            statsd.Metric<Count>("softbans", 1, 1);
-            if (auto reply = _guild.create_guild_ban(tar, 7).get(); !reply)
-                _channel.create_message(fmt::format("Unable to softban: {}", toks[1].data()));
-            else
-            {
-                auto tmem = obj.bot->find_member(tar);
-                if (auto remove_reply = _guild.remove_guild_ban(tar).get(); !remove_reply)
-                {
-                    if (!tmem)
-                        _channel.create_message(fmt::format("Softbanned: {}", toks[1].data()));
-                    else
-                        _channel.create_message(fmt::format("Softbanned: <@{}>", tar));
-                }
-                else
-                {
-                    if (!tmem)
-                        _channel.create_message(fmt::format("Banned: {}", toks[1].data()));
-                    else
-                        _channel.create_message(fmt::format("Banned: <@{}>", tar));
-                }
-            }
-            return true;
-        }
-
-
-
+        return true;
     }
 
-//     if (toks[0] == "events")
-//     {
-//         uint64_t eventsseen = 0;
-//         std::stringstream ss;
-// 
-//         for (auto & evt : bot.message_count)
-//         {
-//             ss << "[" << evt.first << "]:" << evt.second << ' ';
-//             eventsseen += evt.second;
-//         }
-// 
-//         json msg =
-//         {
-//             { "title", fmt::format("Messages received: {}", [&]() -> int64_t { int64_t c = 0; for (auto & s : obj.bot->shards) { c += s->get_sequence(); } return c; }()) },
-//             { "description", ss.str() },
-//             { "color", rand() % 0xFFFFFF }
-//         };
-// 
-//         _channel.create_message_embed({}, msg);
-//         return true;
-//     }
 
 /*
     if (toks[0] == "help")
@@ -630,102 +617,52 @@ bool AegisBot::process_user_messages(aegis::gateway::events::message_create & ob
         _channel.create_message("This is where the help will go. For now, you can get help @ https://discord.gg/Kv7aP5K");
         return true;
     }*/
-    if (toks[0] == "info")
+
+    if (toks[0] == "ignore_channel")
     {
-        _channel.create_message_embed({}, make_info_obj(obj._shard));
-        return true;
-    }
-
-    if (toks[0] == "reportbug")
-    {
-        request = request.substr(toks[0].size() + 1);
-        obj.bot->find_channel(bug_report_channel_id)->create_message(fmt::format("[Bug report] u[{}] g[{}] c[{}] ``` {} ```", _member.get_id(), _guild.get_id(), _channel.get_id(), request));
-        return true;
-    }
-
-    if (toks[0] == "feedback")
-    {
-        request = request.substr(toks[0].size() + 1);
-        obj.bot->find_channel(bot_control_channel)->create_message(fmt::format("[Feedback] u[{}] g[{}] c[{}] ``` {} ```", _member.get_id(), _guild.get_id(), _channel.get_id(), request));
-        return true;
-    }
-
-
-    if (toks[0] == "source")
-    {
-        json t = {
-            { "title", "AegisBot" },
-            { "description", "[Latest bot source](https://github.com/zeroxs/aegis.cpp)\n[Official Bot Server](https://discord.gg/Kv7aP5K)" },
-            { "color", rand() % 0xFFFFFF }
-        };
-
-        _channel.create_message_embed({}, t);
-        return true;
-    }
-
-    if (toks[0] == "stats")
-    {
-        _channel.create_message("Bot statistics: https://p.datadoghq.com/sb/2d84bb2a8-ee05b3fef6776577981ed2b485b8bfc1");
-        return true;
-    }
-
-    if (toks[0] == "gdpr")
-    {
-        _channel.create_message("More information on how we handle your data can be found here: https://www.archives.gov/founding-docs");
-        return true;
-    }
-
-    if (toks[0] == "help")
-    {
-        if (toks.size() == 1)
+        auto it = std::find(g_data.ignored_channels.begin(), g_data.ignored_channels.end(), channel_id);
+        if (it == g_data.ignored_channels.end())
         {
-
+            g_data.ignored_channels.push_back(channel_id);
+            create_message(_channel, "Channel ignore set to: true", true);
+            sadd("ignored_channels", { std::to_string(channel_id) }, g_data);
+            return true;
         }
+
+        g_data.ignored_channels.erase(it);
+        create_message(_channel, "Channel ignore set to: false", true);
+        srem("ignored_channels", { std::to_string(channel_id) }, g_data);
+        return true;
     }
 
-//     if (toks[0] == "mdata")
-//     {
-//         if (check_params(toks, 3, "mdata `module` (reset|save|reload)"))
-//             return;
-// 
-//         if (toks[1] == "auction")
-//         {
-//             if (toks[2] == "reset")
-//             {
-// 
-// 
-//                 hset("auction", { "hostrole", "0" }, g_data);
-//                 hset("auction", { "managerrole", "0" }, g_data);
-//                 hset("auction", { "bidtime", "0" }, g_data);
-//                 hset("auction", { "defaultfunds", "1000" }, g_data);
-// 
-// 
-//                 auto & mod_data = g_data.enabled_modules[modules::Auction];
-// 
-//                 Guild & g_data = get_guild(guild_id);
-//                 if (g_data.auction_data == nullptr)
-//                     g_data.auction_data = std::make_unique<mod_auction>(g_data, bot.io_service());
-//                 mod_auction & a_data = *g_data.auction_data;
-// 
-//                 a_data.hostrole = 0;
-//                 a_data.managerrole = 0;
-//                 a_data.bidtime = 0;
-//                 a_data.defaultfunds = 1000;
-// 
-//                 a_data.hostrole = std::stoll(hget("auction", { "hostrole" }, g_data));
-//                 a_data.managerrole = std::stoll(hget("auction", { "managerrole" }, g_data));
-//                 a_data.bidtime = std::stoll(hget("auction", { "bidtime" }, g_data));
-//                 a_data.defaultfunds = std::stoll(hget("auction", { "defaultfunds" }, g_data));
-// 
-// 
-// 
-//             }
-//         }
-//         else if (toks[1] == "music")
-//         {
-//         }
-//         return;
-//     }
+    if (toks[0] == "channel_status")
+    {
+        bool res = false;
+        auto it = std::find(g_data.ignored_channels.begin(), g_data.ignored_channels.end(), channel_id);
+        if (it != g_data.ignored_channels.end())
+            res = true;
+
+        create_message(_channel, fmt::format("Channel ignore currently set to: {}", res), true);
+        return true;
+    }
+
+    if (toks[0] == "setplugins")
+    {
+        umod_servers[guild_id] = channel_id;
+        req_success(obj.msg);
+        hset({ "config:umod_servers", std::to_string(guild_id), std::to_string(channel_id) });
+        return true;
+    }
+
+    if (toks[0] == "clearplugins")
+    {
+        auto it = umod_servers.find(guild_id);
+        if (it != umod_servers.end())
+            umod_servers.erase(it);
+        req_success(obj.msg);
+        hdel({ "config:umod_servers", std::to_string(guild_id) });
+        return true;
+    }
 
     return false;
 }

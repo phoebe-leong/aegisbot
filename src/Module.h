@@ -2,7 +2,7 @@
 // Module.h
 // ********
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -17,6 +17,7 @@
 #include <vector>
 #include <unordered_map>
 #include <functional>
+#include <algorithm>
 
 namespace asio
 {

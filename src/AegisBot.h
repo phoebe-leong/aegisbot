@@ -2,14 +2,16 @@
 // AegisBot.h
 // **********
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
 
+//../../aegis.cpp/project/bin/aegis.cpp.lib;
+//AEGIS_DYN_LINK
 #pragma once
 
-//#include <aegis/core.hpp>
+#include <aegis/core.hpp>
 //#include <aegis/gateway/objects/message.hpp>
 //#include <aegis.hpp>
 #include <aegis/gateway/events/message_create.hpp>
@@ -59,9 +61,9 @@ struct shared_data
 
     std::string_view username;
 
-    aegis::member & _member;
-    aegis::channel & _channel;
-    aegis::guild & _guild;
+    aegis::user & user;
+    aegis::channel & channel;
+    aegis::guild & guild;
     std::string_view content;
     Guild & g_data;
     std::vector<std::string_view> & toks;
@@ -74,8 +76,27 @@ class AegisBot
 public:
     static constexpr const char * ZWSP = u8"\u200b";
 
-    AegisBot(asio::io_context & _io, aegis::core & bot);
+    AegisBot(asio::io_context & _io);
     ~AegisBot() = default;
+
+    void set_bot(aegis::core & bot)
+    {
+        this->_bot = &bot;
+
+//         bot.set_on_shard_connect([&](aegis::shards::shard * _shard)
+//         {
+//             json j;
+//             j["shard:connects"] = 1;
+//             event_log(j, "/shards");
+//         });
+
+        _bot->set_on_shard_disconnect([&](aegis::shards::shard * _shard)
+        {
+            json j;
+            j["disconnect"] = 1;
+            event_log(j, "/shards");
+        });
+    }
 
     template<typename Out>
     void split(const std::string_view s, char delim, Out result)
@@ -99,12 +120,15 @@ public:
 
     void message_end(std::chrono::steady_clock::time_point start_time, const std::string & msg)
     {
+        if (_bot->get_state() == aegis::bot_status::shutdown)
+            return;
+
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_time).count();
 //         if (msg != "PRESENCE_UPDATE" && msg != "TYPING_START")
-//             bot.log->debug("message_end : {} dura: {}us", msg, us);
+//             AEGIS_DEBUG(bot.log, "message_end : {} dura: {}us", msg, us);
 
 //         if ((msg == "GUILD_MEMBERS_CHUNK") && (msg != "GUIILD_CREATE") && (msg != "GUIILD_UPDATE"))
-//             bot.log->debug("message_end : {} dura: {}ms", msg, uint64_t(us/1000));
+//             AEGIS_DEBUG(bot.log, "message_end : {} dura: {}ms", msg, uint64_t(us/1000));
         auto & e = counters._msg[msg];
         e.count++;
         e.time += us;
@@ -115,9 +139,12 @@ public:
 
     void js_end(std::chrono::steady_clock::time_point start_time, const std::string & msg)
     {
+        if (_bot->get_state() == aegis::bot_status::shutdown)
+            return;
+
         auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start_time).count();
 //         if (msg != "PRESENCE_UPDATE" && msg != "TYPING_START")
-//             bot.log->debug("js_end : {} dura: {}us", msg, us);
+//             AEGIS_DEBUG(bot.log, "js_end : {} dura: {}us", msg, us);
         auto & e = counters._js[msg];
         e.count++;
         e.time += us;
@@ -148,26 +175,27 @@ public:
     redis_subscriber redis_logger;
     asio::steady_timer memory_stats;
     std::string ipaddress;
-    uint16_t port;
+    uint16_t port = 0;
     std::string password;
-    aegis::core & bot;
+    aegis::core * _bot;
     bool voice_debug = false;
     bool is_production = true;
     std::string logging_address;
     std::string logging_port;
+    std::string redis_address;
 
     void do_log(std::string msg);
 
     void do_peek(std::string msg)
     {
-        asio::post(_io_service, asio::bind_executor(strand, [msg, this]()
-        {
+//         asio::post(_io_service, asio::bind_executor(strand, [msg, this]()
+//         {
             std::lock_guard<std::mutex> lock(r_mutex);
             redis.command("PUBLISH", { "aegis:peek", msg });
-        }));
+//         }));
     }
 
-    bool create_message(aegis::channel & _channel, const std::string & str, bool _override = false) noexcept;
+    aegis::future<aegis::gateway::objects::message> create_message(aegis::channel & _channel, const std::string & str, bool _override = false) noexcept;
 
     asio::io_context & _io_service;
 
@@ -188,6 +216,10 @@ public:
     asio::steady_timer web_log_timer;
     asio::steady_timer status_timer;
     asio::steady_timer maint_timer;
+	asio::steady_timer umod_timer;
+    asio::steady_timer message_collection_timer;
+
+    aegis::snowflake collection_last_message;
 
     std::shared_ptr<spdlog::logger> log;
 
@@ -198,6 +230,9 @@ public:
     void push_stats();
     void update_stats();
     void send_memory_stats();
+    void start_timers();
+    void umod();
+    void message_collect();
 
     // Messages you want to process
     void inject();
@@ -210,13 +245,15 @@ public:
 
     std::set<aegis::snowflake> peeks;
 
-    bool has_perms(Guild & g_data, aegis::member & _member, aegis::guild & _guild, std::string cmd);
+    bool has_perms(Guild & g_data, aegis::user & _user, aegis::guild & _guild, std::string cmd);
 
     bool module_enabled(modules mod) const noexcept;
 
     bool module_enabled(Guild & g_data, modules mod) const noexcept;
 
     Guild & get_guild(aegis::snowflake id);
+
+    Guild * find_guild(aegis::snowflake id);
 
     asio::io_context::strand strand;
 
@@ -225,6 +262,8 @@ public:
     std::vector<std::string> commands;
 
     std::unordered_map<std::string, uint16_t> command_counters;
+
+	int64_t run_commands = 0;
 
     struct event_data
     {
@@ -323,9 +362,13 @@ public:
 
     std::shared_mutex m_message;
 
-    std::unordered_map<aegis::snowflake, aegis::gateway::objects::message> message_history;
+    std::map<aegis::snowflake, aegis::gateway::objects::message> message_history;
+
+    std::map<aegis::snowflake, aegis::gateway::objects::message> deleted_message_history;
 
     std::unordered_map<aegis::snowflake, aegis::snowflake> dm_channels;
+
+	std::unordered_map<aegis::snowflake, aegis::snowflake> umod_servers;
 
     void event_log(const json & j, const std::string & path);
 
@@ -388,50 +431,50 @@ public:
 
     std::string hget(const std::string_view key, std::vector<std::string> value, Guild & g_data);
 
-    bool hset(const std::vector<std::string> & value)
+    bool hset(std::vector<std::string> value)
     {
-        return basic_action("HSET", value);
+        return basic_action("HSET", std::move(value));
     }
 
-    bool hmset(const std::vector<std::string> & value)
+    bool hmset(std::vector<std::string> value)
     {
-        return basic_action("HMSET", value);
+        return basic_action("HMSET", std::move(value));
     }
 
-    std::string hget(const std::vector<std::string> & value)
+    std::string hget(std::vector<std::string> value)
     {
-        return result_action("HGET", value);
+        return result_action("HGET", std::move(value));
     }
 
-    bool hdel(const std::vector<std::string> & value)
+    bool hdel(std::vector<std::string> value)
     {
-        return basic_action("HDEL", value);
+        return basic_action("HDEL", std::move(value));
     }
 
-    std::string run(const std::string_view cmd, const std::vector<std::string> value)
+    std::string run(const std::string_view cmd, std::vector<std::string> value)
     {
-        return result_action(cmd, value);
+        return result_action(cmd, std::move(value));
     }
 
-    std::string run(const std::string_view cmd, const std::vector<std::string_view> value)
+    std::string run(const std::string_view cmd, std::vector<std::string_view> value)
     {
         std::vector<std::string> n;
         for (const auto & v : value)
             n.push_back(std::string{ v });
-        return result_action(cmd, n);
+        return result_action(cmd, std::move(n));
     }
 
-    std::vector<std::string> run_v(const std::string_view cmd, const std::vector<std::string> & value)
+    std::vector<std::string> run_v(const std::string_view cmd, std::vector<std::string> value)
     {
-        return get_raw(cmd, value);
+        return get_raw(cmd, std::move(value));
     }
 
-    std::vector<std::string> run_v(const std::string_view cmd, const std::vector<std::string_view> & value)
+    std::vector<std::string> run_v(const std::string_view cmd, std::vector<std::string_view> value)
     {
         std::vector<std::string> n;
         for (const auto & v : value)
             n.push_back(std::string{ v });
-        return get_raw(cmd, n);
+        return get_raw(cmd, std::move(n));
     }
 
     std::string get(const std::string_view key)
@@ -449,17 +492,17 @@ public:
         return basic_action("DEL", { std::string{ key } });
     }
 
-    bool del(const std::vector<std::string_view> & value)
+    bool del(std::vector<std::string_view> value)
     {
         std::vector<std::string> n;
         for (const auto & v : value)
             n.push_back(std::string{ v });
-        return basic_action("DEL", n);
+        return basic_action("DEL", std::move(n));
     }
 
-    bool del(const std::vector<std::string> & value)
+    bool del(std::vector<std::string> value)
     {
-        return basic_action("DEL", value);
+        return basic_action("DEL", std::move(value));
     }
 
     bool publish(const std::string_view key, const std::string_view value)
@@ -524,7 +567,7 @@ public:
 
     std::vector<std::string> get_vector(const std::string_view key, Guild & g_data);
 
-    std::vector<std::string> get_raw(const std::string_view cmd, const std::vector<std::string> & value)
+    std::vector<std::string> get_raw(const std::string_view cmd, std::vector<std::string> value)
     {
         std::lock_guard<std::mutex> lock(r_mutex);
         redisclient::RedisValue result;
@@ -558,7 +601,7 @@ public:
         return false;
     }
 
-    bool do_raw(const std::string_view cmd, const std::vector<std::string> & value)
+    bool do_raw(const std::string_view cmd, std::vector<std::string> value)
     {
         std::lock_guard<std::mutex> lock(r_mutex);
         redisclient::RedisValue result;
@@ -586,23 +629,23 @@ public:
 
     bool srem(const std::string_view key, const std::vector<std::string> & value, Guild & g_data);
 
-    bool basic_action(const std::string_view action, const std::vector<std::string> & value);
+    bool basic_action(const std::string_view action, std::vector<std::string> value);
 
     std::string result_action(const std::string_view action, const std::vector<std::string> & value);
 
     /// Specify key separately
-    bool basic_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value);
+    bool basic_action(const std::string_view action, const std::string_view key, std::vector<std::string> value);
 
     /// Specify key separately
     std::string result_action(const std::string_view action, const std::string_view key, const std::vector<std::string> & value);
 
     std::future<std::string> async_get_result(const std::string_view action, const std::string_view key, const std::vector<std::string> & value);
 
-    std::future<aegis::rest::rest_reply> req_success(aegis::gateway::objects::message & msg);
+    aegis::future<aegis::rest::rest_reply> req_success(aegis::gateway::objects::message & msg);
 
-    std::future<aegis::rest::rest_reply> req_fail(aegis::gateway::objects::message & msg);
+    aegis::future<aegis::rest::rest_reply> req_fail(aegis::gateway::objects::message & msg);
 
-    std::future<aegis::rest::rest_reply> req_permission(aegis::gateway::objects::message & msg);
+    aegis::future<aegis::rest::rest_reply> req_permission(aegis::gateway::objects::message & msg);
 
     const bool to_int64(const std::string & s) const noexcept
     {
@@ -633,6 +676,16 @@ public:
     //extensions
     bool process_admin_messages(aegis::gateway::events::message_create & obj, shared_data & sd);
     bool process_user_messages(aegis::gateway::events::message_create & obj, shared_data & sd);
+
+	std::string cdata_get(const std::string & str)
+	{
+		return hget({ "config:customdata", str });
+	}
+
+	bool cdata_set(const std::string & str, const std::string& val)
+	{
+		return hset({ "config:customdata", str, val });
+	}
 
     modules get_module(std::string name)
     {
@@ -813,6 +866,25 @@ public:
 
     void ChannelPinsUpdate(aegis::gateway::events::channel_pins_update obj);
 
-    const json make_info_obj(aegis::shards::shard * _shard) const noexcept;
+    const json make_info_obj(aegis::shards::shard& _shard) const noexcept;
+
+    const std::string make_stats_obj(aegis::shards::shard& _shard) const noexcept;
+
+    template<typename T, typename V = std::result_of_t<T()>, typename = std::enable_if_t<!std::is_void<V>::value>>
+    aegis::future<V> async(T f)
+    {
+        return _bot->async(f);
+    }
+
+    template<typename T, typename V = std::enable_if_t<std::is_void<std::result_of_t<T()>>::value>>
+    aegis::future<V> async(T f)
+    {
+        return _bot->async(f);
+    }
+
+	template <class T>
+	Module* init_module(Guild& g_data) {
+		return new T(g_data, _bot->get_io_context());
+	}
 };
 

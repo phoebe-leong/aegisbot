@@ -2,7 +2,7 @@
 // mod_autoresponder.cpp
 // *********************
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -14,7 +14,7 @@
 #include <nlohmann/json.hpp>
 
 using aegis::snowflake;
-using aegis::member;
+using aegis::user;
 using aegis::channel;
 using aegis::guild;
 
@@ -108,9 +108,9 @@ bool mod_timer::remind(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;

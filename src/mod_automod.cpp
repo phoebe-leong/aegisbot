@@ -2,7 +2,7 @@
 // mod_automod.cpp
 // ***************
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -13,11 +13,11 @@
 #include <aegis/channel.hpp>
 #include <aegis/guild.hpp>
 #if defined(AEGIS_HEADER_ONLY)
-#include <aegis/impl/member.cpp>
+#include <aegis/impl/user.cpp>
 #include <aegis/impl/channel.cpp>
 #include <aegis/impl/guild.cpp>
 #endif
-#include <aegis/member.hpp>
+#include <aegis/user.hpp>
 
 std::string mod_automod::r_prefix = "automod";
 
@@ -102,7 +102,7 @@ bool mod_automod::process(shared_data & sd)
         if (sd.member_id == u)
             return true;
     for (const auto & u : ignored_roles)
-        if (sd._guild.member_has_role(sd.member_id, u))
+        if (sd.guild.member_has_role(sd.member_id, u))
             return true;
 
     for (const auto & keyword : banned_keywords)
@@ -112,28 +112,28 @@ bool mod_automod::process(shared_data & sd)
             //found
             aegis::channel * c = nullptr;
             if (log_target != 0)
-                c = sd._guild.get_channel(log_target);
+                c = sd.guild.get_channel(log_target);
             switch (keyword.second)
             {
                 case action_taken::Log:
-                    if (c) c->create_message(fmt::format("User said banned word : {}", sd._member.get_mention()));
+                    if (c) c->create_message(fmt::format("User said banned word : {}", sd.user.get_mention()));
                     return false;
                 case action_taken::Warn:
-                    if (c) c->create_message(fmt::format("User said banned word : {}", sd._member.get_mention()));
-                    sd._channel.create_message(fmt::format("Please do not use that language {}", sd._member.get_mention()));
+                    if (c) c->create_message(fmt::format("User said banned word : {}", sd.user.get_mention()));
+                    sd.channel.create_message(fmt::format("Please do not use that language {}", sd.user.get_mention()));
                     return false;
                 case action_taken::Delete:
-                    if (c) c->create_message(fmt::format("User said banned word : {}\nAction: Delete", sd._member.get_mention()));
+                    if (c) c->create_message(fmt::format("User said banned word : {}\nAction: Delete", sd.user.get_mention()));
                     sd.msg.msg.delete_message();
                     //sd._channel.create_message(fmt::format("Deleted : {}", sd._member.get_mention()));
                     return false;
                 case action_taken::Kick:
-                    if (c) c->create_message(fmt::format("User said banned word : {}\nAction: Kick", sd._member.get_mention()));
-                    sd._guild.remove_guild_member(sd.member_id);
+                    if (c) c->create_message(fmt::format("User said banned word : {}\nAction: Kick", sd.user.get_mention()));
+                    sd.guild.remove_guild_member(sd.member_id);
                     return false;
                 case action_taken::Ban:
-                    if (c) c->create_message(fmt::format("User said banned word : {}\nAction: Ban", sd._member.get_mention()));
-                    sd._guild.create_guild_ban(sd.member_id, 1, "Banned word");
+                    if (c) c->create_message(fmt::format("User said banned word : {}\nAction: Ban", sd.user.get_mention()));
+                    sd.guild.create_guild_ban(sd.member_id, 1, "Banned word");
                     return false;
             }
         }
@@ -151,9 +151,9 @@ bool mod_automod::automod(shared_data & sd)
 
     std::string_view username = sd.username;
 
-    aegis::member & _member = sd._member;
-    aegis::channel & _channel = sd._channel;
-    aegis::guild & _guild = sd._guild;
+    aegis::user & _member = sd.user;
+    aegis::channel & _channel = sd.channel;
+    aegis::guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -185,15 +185,15 @@ bool mod_automod::automod(shared_data & sd)
             if (check_params(_channel, toks, 2, "banword log_target <channel>"))
                 return true;
 
-            log_target = sd.ab.get_snowflake(toks[2], sd._guild);
+            log_target = sd.ab.get_snowflake(toks[2], sd.guild);
             if (log_target)
             {
-                sd._channel.create_message(fmt::format("Logging channel set to <#{}>", log_target));
+                sd.channel.create_message(fmt::format("Logging channel set to <#{}>", log_target));
                 sd.ab.put(fmt::format("{}:log_target", redis_key), std::to_string(log_target));
             }
             else
             {
-                sd._channel.create_message("Unable to set channel");
+                sd.channel.create_message("Unable to set channel");
             }
             return true;
         }
@@ -207,31 +207,31 @@ bool mod_automod::automod(shared_data & sd)
             if (subcmd == "log")
             {
                 banned_keywords.emplace(bword, action_taken::Log);
-                sd._channel.create_message("Keyword added to ban list with action set to `Log`.");
+                sd.channel.create_message("Keyword added to ban list with action set to `Log`.");
                 sd.ab.hset({ fmt::format("{}:bkw", redis_key), bword, std::to_string(static_cast<int>(action_taken::Log)) });
             }
             else if (subcmd == "warn")
             {
                 banned_keywords.emplace(std::string(toks[3]), action_taken::Warn);
-                sd._channel.create_message("Keyword added to ban list with action set to `Warn`.");
+                sd.channel.create_message("Keyword added to ban list with action set to `Warn`.");
                 sd.ab.hset({ fmt::format("{}:bkw", redis_key), bword, std::to_string(static_cast<int>(action_taken::Warn)) });
             }
             else if (subcmd == "delete")
             {
                 banned_keywords.emplace(std::string(toks[3]), action_taken::Delete);
-                sd._channel.create_message("Keyword added to ban list with action set to `Delete`.");
+                sd.channel.create_message("Keyword added to ban list with action set to `Delete`.");
                 sd.ab.hset({ fmt::format("{}:bkw", redis_key), bword, std::to_string(static_cast<int>(action_taken::Delete)) });
             }
             else if (subcmd == "kick")
             {
                 banned_keywords.emplace(std::string(toks[3]), action_taken::Kick);
-                sd._channel.create_message("Keyword added to ban list with action set to `Kick`.");
+                sd.channel.create_message("Keyword added to ban list with action set to `Kick`.");
                 sd.ab.hset({ fmt::format("{}:bkw", redis_key), bword, std::to_string(static_cast<int>(action_taken::Kick)) });
             }
             else if (subcmd == "ban")
             {
                 banned_keywords.emplace(std::string(toks[3]), action_taken::Ban);
-                sd._channel.create_message("Keyword added to ban list with action set to `Ban`.");
+                sd.channel.create_message("Keyword added to ban list with action set to `Ban`.");
                 sd.ab.hset({ fmt::format("{}:bkw", redis_key), bword, std::to_string(static_cast<int>(action_taken::Ban)) });
             }
             return true;
@@ -246,7 +246,7 @@ bool mod_automod::automod(shared_data & sd)
             if (res != banned_keywords.end())
             {
                 banned_keywords.erase(res);
-                sd._channel.create_message("Keyword removed from ban list.");
+                sd.channel.create_message("Keyword removed from ban list.");
                 sd.ab.hdel({ fmt::format("{}:bkw", redis_key), bword });
             }
             return true;
@@ -262,39 +262,39 @@ bool mod_automod::automod(shared_data & sd)
                 std::string subcmd = to_lower(toks[3]);
                 if (subcmd == "add")
                 {
-                    aegis::snowflake role = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake role = sd.ab.get_snowflake(toks[4], sd.guild);
                     if (!role)
                     {
                         //can't find based on snowflake -- try a basic name check
                         std::shared_lock<std::shared_mutex> l(_guild.mtx());
-                        for (auto & r : sd._guild.get_roles())
+                        for (auto & r : sd.guild.get_roles())
                         {
                             if (to_lower(r.second.name) == to_lower(toks[4]))
                             {
                                 //match
                                 ignored_roles.emplace_back(r.second.role_id);
-                                sd._channel.create_message("Added role to ignore list.");
+                                sd.channel.create_message("Added role to ignore list.");
                                 sd.ab.sadd({ fmt::format("{}:i_r", redis_key), std::to_string(r.second.role_id) });
                                 return true;
                             }
                         }
-                        sd._channel.create_message("Invalid role.");
+                        sd.channel.create_message("Invalid role.");
                         return true;
                     }
 
                     ignored_roles.emplace_back(role);
-                    sd._channel.create_message("Added role to ignore list.");
+                    sd.channel.create_message("Added role to ignore list.");
                     sd.ab.sadd({ fmt::format("{}:i_r", redis_key), std::to_string(role) });
                     return true;
                 }
                 else if (subcmd == "rem")
                 {
-                    aegis::snowflake role = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake role = sd.ab.get_snowflake(toks[4], sd.guild);
                     if (!role)
                     {
                         //can't find based on snowflake -- try a basic name check
                         std::shared_lock<std::shared_mutex> l(_guild.mtx());
-                        for (auto & r : sd._guild.get_roles())
+                        for (auto & r : sd.guild.get_roles())
                         {
                             if (to_lower(r.second.name) == to_lower(toks[4]))
                             {
@@ -303,13 +303,13 @@ bool mod_automod::automod(shared_data & sd)
                                 if (res != ignored_roles.end())
                                 {
                                     ignored_roles.erase(res);
-                                    sd._channel.create_message("Removed role from ignore list.");
+                                    sd.channel.create_message("Removed role from ignore list.");
                                     sd.ab.srem({ fmt::format("{}:i_r", redis_key), std::to_string(r.second.role_id) });
                                     return true;
                                 }
                             }
                         }
-                        sd._channel.create_message("Invalid role.");
+                        sd.channel.create_message("Invalid role.");
                         return true;
                     }
 
@@ -317,11 +317,11 @@ bool mod_automod::automod(shared_data & sd)
                     if (res != ignored_roles.end())
                     {
                         ignored_roles.erase(res);
-                        sd._channel.create_message("Removed role from ignore list.");
+                        sd.channel.create_message("Removed role from ignore list.");
                         sd.ab.srem({ fmt::format("{}:i_r", redis_key), std::to_string(role) });
                         return true;
                     }
-                    sd._channel.create_message("Role not found in list.");
+                    sd.channel.create_message("Role not found in list.");
                     return true;
                 }
             }
@@ -330,24 +330,24 @@ bool mod_automod::automod(shared_data & sd)
                 std::string subcmd = to_lower(toks[3]);
                 if (subcmd == "add")
                 {
-                    aegis::snowflake user = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake user = sd.ab.get_snowflake(toks[4], sd.guild);
                     if (!user)
                     {
-                        sd._channel.create_message("Invalid user.");
+                        sd.channel.create_message("Invalid user.");
                         return true;
                     }
 
                     ignored_users.emplace_back(user);
                     sd.ab.sadd({ fmt::format("{}:i_u", redis_key), std::to_string(user) });
-                    sd._channel.create_message("Added user to ignore list.");
+                    sd.channel.create_message("Added user to ignore list.");
                     return true;
                 }
                 else if (subcmd == "rem")
                 {
-                    aegis::snowflake user = sd.ab.get_snowflake(toks[4], sd._guild);
+                    aegis::snowflake user = sd.ab.get_snowflake(toks[4], sd.guild);
                     if (!user)
                     {
-                        sd._channel.create_message("Invalid user.");
+                        sd.channel.create_message("Invalid user.");
                         return true;
                     }
 
@@ -356,10 +356,10 @@ bool mod_automod::automod(shared_data & sd)
                     {
                         ignored_users.erase(res);
                         sd.ab.srem({ fmt::format("{}:i_u", redis_key), std::to_string(user) });
-                        sd._channel.create_message("Removed user from ignore list.");
+                        sd.channel.create_message("Removed user from ignore list.");
                         return true;
                     }
-                    sd._channel.create_message("User not found in list.");
+                    sd.channel.create_message("User not found in list.");
                     return true;
                 }
             }

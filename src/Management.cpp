@@ -2,7 +2,7 @@
 // Management.cpp
 // **************
 //
-// Copyright (c) 2018 Sharon W (sharon at aegis dot gg)
+// Copyright (c) 2019 Sharon W (sharon at aegis dot gg)
 //
 // Distributed under the MIT License. (See accompanying file LICENSE)
 // 
@@ -15,16 +15,23 @@
 #if !defined(AEGIS_MSVC)
 #include <dlfcn.h>
 #endif
+#include <aegis/guild.hpp>
+#include <aegis/channel.hpp>
+#include <aegis/user.hpp>
 
 using aegis::snowflake;
-using aegis::member;
+using aegis::user;
 using aegis::channel;
 using aegis::guild;
+using aegis::rest::rest_reply;
+using aegis::gateway::objects::message;
 
 bool AegisBot::process_admin_messages(aegis::gateway::events::message_create & obj, shared_data & sd)
 {
-    if (sd.message_id == bot_owner_id)
+    if (sd.member_id != bot_owner_id)
         return false;
+
+    aegis::core & bot = *_bot;
 
     const snowflake & channel_id = sd.channel_id;
     const snowflake & guild_id = sd.guild_id;
@@ -34,9 +41,9 @@ bool AegisBot::process_admin_messages(aegis::gateway::events::message_create & o
 
     std::string_view username = sd.username;
 
-    member & _member = sd._member;
-    channel & _channel = sd._channel;
-    guild & _guild = sd._guild;
+    user & _member = sd.user;
+    channel & _channel = sd.channel;
+    guild & _guild = sd.guild;
     std::string_view content = sd.content;
 
     Guild & g_data = sd.g_data;
@@ -105,7 +112,7 @@ bool AegisBot::process_admin_messages(aegis::gateway::events::message_create & o
 
     if (toks[0] == "dc")
     {
-        bot.get_shard_mgr().close(*obj._shard, 1003);
+        bot.get_shard_mgr().close(obj.shard, 1003);
         return true;
     }
 
@@ -116,7 +123,7 @@ bool AegisBot::process_admin_messages(aegis::gateway::events::message_create & o
 
     if (toks[0] == "socketcheck")
     {
-        fmt::MemoryWriter w;
+        std::stringstream w;
         for (uint32_t i = 0; i < bot.get_shard_mgr().shard_count(); ++i)
         {
             auto & shd = bot.get_shard_mgr().get_shard(i);
@@ -128,9 +135,11 @@ bool AegisBot::process_admin_messages(aegis::gateway::events::message_create & o
 #if !defined(AEGIS_MSVC)
     if (toks[0] == "bash")
     {
+        if (toks.size() == 1)
+            return true;
         try
         {
-            std::string torun{ content.data() + toks[0].size() + 1 };
+            std::string torun{ toks[1].data() };
             std::string result = exec(torun);
             _channel.create_message(fmt::format("Result: ```\n{}\n```", result));
         }
@@ -221,7 +230,7 @@ extern "C" std::string AegisExec(AegisBot & bot, aegis::gateway::events::message
             static int32_t incr = 0;
             ++incr;
             auto compile_start = std::chrono::steady_clock::now();
-            std::string compileresult = exec(fmt::format("g++-7 -std=gnu++17 -O2 main.cpp -shared -fPIC -o main{}.so -I../src/ 2>&1", incr));
+            std::string compileresult = exec(fmt::format("g++-7 -std=gnu++17 -O2 -DAEGIS_PROFILING=1 main.cpp -shared -fPIC -o main{}.so -I../src/ 2>&1", incr));
             auto compile_count = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - compile_start).count();
             std::string result = exec(fmt::format(R"(if [ -f main{}.so ] ; then echo "SUCCESS" ; else echo "FAIL" ; fi)", incr));
 
@@ -231,8 +240,9 @@ extern "C" std::string AegisExec(AegisBot & bot, aegis::gateway::events::message
                 auto evaltoload = dlopen(fmt::format("{}/main{}.so", getenv("PWD"), incr).c_str(), RTLD_NOW);
                 if (!evaltoload)
                 {
-                    bot.log->info("dlerror : {}", dlerror());
-                    _channel.create_message("Failed to load so");
+                    const char *dlsym_error = dlerror();
+                    bot.log->info("dlerror : {}", dlsym_error);
+                    _channel.create_message(fmt::format("Failed to load so: {}", dlsym_error));
                     return false;
                 }
 
@@ -245,7 +255,7 @@ extern "C" std::string AegisExec(AegisBot & bot, aegis::gateway::events::message
                 if (dlsym_error)
                 {
                     bot.log->info("dlsym_error : {}", dlsym_error);
-                    _channel.create_message("Failed to run so");
+                    _channel.create_message(fmt::format("Failed to run so: {}", dlsym_error));
                     dlclose(evaltoload);
                     return true;
                 }
@@ -440,24 +450,25 @@ std::cout << "Testing\n";
         auto res2 = bot.get_rest_controller().execute(fmt::format("/channels/{}/messages", dm_id), R"({ "content": "test" })", "POST");
         bot.log->info("DM result:\n{}", res2.content);
     }*/
-    if (toks[0] == "dm2")
-    {
-        std::future<aegis::rest::rest_reply> tres;
-        bot.log->info("Start DM1");
-        auto res1 = aegis::utility::perf_run("basic", [=, &tres, id = obj.get_member().get_id()]()
-        {
-            tres = bot.create_dm_message(id, "test message");
-        });
-
-        tres.get();
-
-        bot.log->info("Start DM2");
-        auto res2 = aegis::utility::perf_run("wait", [=, id = obj.get_member().get_id()]()
-        {
-            bot.create_dm_message(id, "test message").get();
-        });
-        bot.log->info("\nres1: {}res2: {}", res1, res2);
-    }
+//     if (toks[0] == "dm2")
+//     {
+//         aegis::promise<aegis::rest::rest_reply> pr;
+//         aegis::future<aegis::rest::rest_reply> tres = pr.get_future();
+//         bot.log->info("Start DM1");
+//         auto res1 = aegis::utility::perf_run("basic", [=, &tres, id = obj.get_member().get_id()]()
+//         {
+//             tres = bot.create_dm_message(id, "test message");
+//         });
+// 
+//         tres.get();
+// 
+//         bot.log->info("Start DM2");
+//         auto res2 = aegis::utility::perf_run("wait", [=, id = obj.get_member().get_id()]()
+//         {
+//             bot.create_dm_message(id, "test message").get();
+//         });
+//         bot.log->info("\nres1: {}res2: {}", res1, res2);
+//     }
     if (toks[0] == "ws")
     {
         if (check_params(toks, 4))
@@ -532,7 +543,7 @@ std::cout << "Testing\n";
                 }
             }
         };
-        obj.bot->send_all_shards(j);
+        bot.send_all_shards(j);
         req_success(obj.msg);
         return true;
     }
@@ -551,7 +562,7 @@ std::cout << "Testing\n";
                 }
             }
         };
-        obj._shard->send(j.dump());
+        obj.shard.send(j.dump());
         req_success(obj.msg);
         return true;
     }
@@ -559,7 +570,7 @@ std::cout << "Testing\n";
     if (toks[0] == "shardstats")
     {
 
-        fmt::MemoryWriter w;
+        std::stringstream w;
         w << "```diff\n";
 
         uint64_t count = 0;
@@ -573,7 +584,7 @@ std::cout << "Testing\n";
 
         std::vector<guild_count_data> shard_guild_c(bot.shard_max_count);
 
-        for (auto & v : obj.bot->guilds)
+        for (auto & v : bot.guilds)
         {
             ++shard_guild_c[v.second->shard_id].guilds;
             shard_guild_c[v.second->shard_id].members += v.second->get_members().size();
@@ -591,7 +602,7 @@ std::cout << "Testing\n";
                 w << '+';
             else
                 w << '-';
-            w << fmt::format(" {:6} {:10}    {:4} {:7}   {:>16}  {:9}ms {:>11}        {:3}\n",
+            w << fmt::format(" {:6} {:10}    {:4} {:7}   {:>16} {:9}ms {:>11}        {:3}\n",
                              s.get_id(),
                              s.get_sequence(),
                              shard_guild_c[s.get_id()].guilds,
@@ -609,8 +620,8 @@ std::cout << "Testing\n";
     if (toks[0] == "shardstats2")
     {
 
-        fmt::MemoryWriter w;
-        w << "This shard: " << obj._shard->get_id() << "```diff\n";
+        std::stringstream w;
+        w << "This shard: " << obj.shard.get_id() << "```diff\n";
 
         uint64_t count = 0;
         count = bot.get_shard_transfer();
@@ -623,7 +634,7 @@ std::cout << "Testing\n";
 
         std::vector<guild_count_data> shard_guild_c(bot.shard_max_count);
 
-        for (auto & v : obj.bot->guilds)
+        for (auto & v : bot.guilds)
         {
             ++shard_guild_c[v.second->shard_id].guilds;
             shard_guild_c[v.second->shard_id].members += v.second->get_members().size();
@@ -641,7 +652,7 @@ std::cout << "Testing\n";
                 w << '+';
             else
                 w << '-';
-            w << fmt::format(" {:6} {:10}    {:4} {:7}   {:>16}  {:9}ms {:>11}        {:3}\n",
+            w << fmt::format(" {:6} {:10}    {:4} {:7}   {:>16} {:9}ms {:>11}        {:3}\n",
                              s.get_id(),
                              s.get_sequence(),
                              shard_guild_c[s.get_id()].guilds,
@@ -658,7 +669,7 @@ std::cout << "Testing\n";
 
 //     if (toks[0] == "shardstats2")
 //     {
-//         fmt::MemoryWriter w;
+//         std::stringstream w;
 //         w << "```diff\n";
 // 
 //         uint64_t count = 0, count_u = 0;
@@ -691,7 +702,7 @@ std::cout << "Testing\n";
 
     if (toks[0] == "shard")
     {
-        _channel.create_message(fmt::format("I am shard#[{}]", obj._shard->get_id()));
+        _channel.create_message(fmt::format("I am shard#[{}]", obj.shard.get_id()));
         return true;
     }
 
@@ -737,8 +748,9 @@ std::cout << "Testing\n";
         snowflake g_sn = std::stoll(gsn);
         if (g_sn)
         {
-            auto & g_data2 = guild_data[g_sn];
-            load_guild(g_sn, g_data2);
+            auto g_data2 = find_guild(g_sn);
+			if (!g_data2) return true;
+            load_guild(g_sn, *g_data2);
             req_success(obj.msg);
             return true;
         }
@@ -812,7 +824,8 @@ std::cout << "Testing\n";
         if (check_params(toks, 3, "override guild_id [module] [on|off]"))
             return true;
         snowflake g_id = std::stoull(std::string{ toks[1] });
-        auto & gd = guild_data[g_id];
+        auto gd = find_guild(g_id);
+		if (!gd) return true;
         if (toks[2] == "on" || toks[2] == "true")
         {
             for (auto & m : bot_modules)
@@ -969,7 +982,7 @@ std::cout << "Testing\n";
         }
         if (toks[1] == "hset")
         {
-            if (check_params(toks, 4))
+            if (check_params(toks, 5))
                 return true;
             hset(toks[2], { std::string{toks[3]}, std::string{ toks[4] } }, g_data);
             obj.msg.create_reaction("success:429554838083207169");
@@ -980,7 +993,12 @@ std::cout << "Testing\n";
         {
             if (check_params(toks, 3))
                 return true;
-            std::string res = hget(toks[2], { std::string{ toks[3] } }, g_data);
+            std::string res;
+            if (toks.size() > 3)
+                res = hget({ std::string{ toks[2] }, { std::string{ toks[3] } } });
+            else
+                res = hget({ g_data.redis_prefix, { std::string{ toks[2] } } });
+
             _channel.create_message(fmt::format("Result: {}", res));
             return true;
         }
@@ -990,26 +1008,17 @@ std::cout << "Testing\n";
                 return true;
             std::string key = "";
             if (toks.size() > 2)
-                key = fmt::format("{}:{}", g_data.redis_prefix, toks[2]);
-            else
-                key = g_data.redis_prefix;
-            std::unordered_map<std::string, std::string> res = get_array(key);
-            fmt::MemoryWriter w;
-            w << "Results of " << key << '\n';
-            for (const auto&[k, v] : res)
             {
-                w << '\n' << k << " - " << v;
+                if (toks[2] == "this")
+                    key = g_data.redis_prefix;
+                else
+                    key = std::string{ toks[2] };
             }
-            _channel.create_message(w.str());
-            return true;
-        }
-        if (toks[1] == "getmap")
-        {
-            if (check_params(toks, 3))
-                return true;
-            std::unordered_map<std::string, std::string> res = get_array(toks[2]);
-            fmt::MemoryWriter w;
-            w << "Results of " << toks[2] << '\n';
+            else
+                key = fmt::format("{}:{}", g_data.redis_prefix, toks[2]);
+            std::unordered_map<std::string, std::string> res = get_array(key);
+            std::stringstream w;
+            w << "Results of " << key << '\n';
             for (const auto&[k, v] : res)
             {
                 w << '\n' << k << " - " << v;
@@ -1022,7 +1031,7 @@ std::cout << "Testing\n";
             if (check_params(toks, 3))
                 return true;
             std::vector<std::string> res = get_vector(toks[2]);
-            fmt::MemoryWriter w;
+            std::stringstream w;
             w << "Results of " << toks[2] << '\n';
             for (const auto & k : res)
             {
@@ -1069,8 +1078,14 @@ std::cout << "Testing\n";
     }
     if (toks[0] == "exit")
     {
-        obj.bot->find_channel(channel_id)->create_message("exiting...");
-        obj.bot->shutdown();
+        bot.find_channel(channel_id)->create_message("exiting...");
+        bot.shutdown();
+        return true;
+    }
+    if (toks[0] == "testexit")
+    {
+        bot.find_channel(channel_id)->create_message("exiting...");
+        bot.shutdown();
         return true;
     }
     if (toks[0] == "role_count")
@@ -1078,7 +1093,7 @@ std::cout << "Testing\n";
         std::reference_wrapper<guild> _g = _channel.get_guild();
         if (toks.size() > 1)
         {
-            _g = *obj.bot->find_guild(std::stoll(std::string(toks[1])));
+            _g = *bot.find_guild(std::stoll(std::string(toks[1])));
             if (&_g.get() == nullptr)
             {
                 _channel.create_message("I am not in that guild.");
@@ -1096,7 +1111,7 @@ std::cout << "Testing\n";
                     ++count[r.second.name];
         }
 
-        fmt::MemoryWriter w;
+        std::stringstream w;
         w << "```cpp\n";
         for (auto o : count)
             w << o.first << " : " << o.second << '\n';
@@ -1105,25 +1120,30 @@ std::cout << "Testing\n";
         _channel.create_message(w.str());
         return true;
     }
-    if (toks[0] == "addrole")
-    {
-        auto res = _channel.get_guild().add_guild_member_role(_member.get_id(), std::stoull(std::string{toks[1]})).get();
-        _channel.create_message(fmt::format("Add role : {} {}",res.reply_code, res.content));
-        return true;
-    }
-    if (toks[0] == "remrole")
-    {
-        auto res = _channel.get_guild().add_guild_member_role(_member.get_id(), std::stoull(std::string{ toks[1] })).get();
-        _channel.create_message(fmt::format("Remove role : {} {}", res.reply_code, res.content));
-        return true;
-    }
+//     if (toks[0] == "addrole")
+//     {
+//         _channel.get_guild().add_guild_member_role(_member.get_id(), std::stoull(std::string{ toks[1] })).then([&](aegis::gateway::objects::role _role) mutable
+//         {
+//             _channel.create_message(fmt::format("Add role : {} {}", _role.name, _role.role_id));
+//         });
+//         return true;
+//     }
+//     if (toks[0] == "remrole")
+//     {
+//         _channel.get_guild().remove_guild_member_role(_member.get_id(), std::stoull(std::string{ toks[1] })).then([&](aegis::rest::rest_reply res) mutable
+//         {
+//             _channel.create_message(fmt::format("Remove role : {} {}", res.reply_code, res.content));
+//         });
+//         
+//         return true;
+//     }
     if (toks[0] == "server")
     {
         // TODO: verify whether this is valid - verified to work. get second opinion on whether valid
         std::reference_wrapper<guild> _g = _channel.get_guild();
         if (toks.size() > 1)
         {
-            _g = *obj.bot->find_guild(std::stoll(std::string(toks[1])));
+            _g = *bot.find_guild(std::stoll(std::string(toks[1])));
             if (&_g.get() == nullptr)
             {
                 _channel.create_message("I am not in that guild.");
@@ -1147,7 +1167,7 @@ std::cout << "Testing\n";
             if (gm.second->is_bot())
                 ++bot_count;
         w.write("    Bots: {}\n", bot_count);
-        auto _member = obj.bot->find_member(_guild.get_owner());
+        auto _member = bot.find_user(_guild.get_owner());
         w.write("   Owner: {} ({})\n", _member->get_full_name(), _member->get_id());
 
         std::chrono::system_clock::time_point starttime = std::chrono::system_clock::from_time_t(_guild.guild_id.get_time() / 1000);
@@ -1189,7 +1209,7 @@ std::cout << "Testing\n";
 
         w.write(" Created: {}ago\n", ss.str());
         w.write("   Roles: {}\n", _guild.get_roles().size());
-        fmt::MemoryWriter r;
+        std::stringstream r;
         for (auto & _role : _guild.get_roles())
             r << _role.second.name << ", ";
         std::string t = r.str();
@@ -1227,7 +1247,7 @@ std::cout << "Testing\n";
 // 
 //         int i = g->channels.size() % 20;
 // 
-//         fmt::MemoryWriter r;
+//         std::stringstream r;
 //         for (auto & c : g->channels)
 //         {
 //             auto & ch = *c.second;
@@ -1258,7 +1278,7 @@ std::cout << "Testing\n";
     if (toks[0] == "serverlist")
     {
         std::stringstream w;
-        for (auto & g : obj.bot->guilds)
+        for (auto & g : bot.guilds)
         {
             auto gld = g.second.get();
             w << "`[" << gld->guild_id << "]`  :  `" << gld->get_name() << "`\n";
@@ -1277,22 +1297,13 @@ std::cout << "Testing\n";
         std::unique_lock<std::mutex> lk(m_ping_test);
         checktime = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         
-        if (auto apireply = _channel.create_message("Pong", checktime).get(); apireply)
-        {
-            aegis::gateway::objects::message msg = json::parse(apireply.content);
-            std::string to_edit = fmt::format("Ping reply: REST [{}ms]", (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() - checktime));
-            msg.edit(to_edit);
-            if (cv_ping_test.wait_for(lk, 20s) == std::cv_status::no_timeout)
-            {
-                msg.edit(fmt::format("{} WS [{}ms]", to_edit, ws_checktime));
-                return true;
-            }
-            else
-            {
-                msg.edit(fmt::format("{} WS [timeout20s]", to_edit));
-                return true;
-            }
-        }
+        auto msg = _channel.create_message("Pong", checktime).get();
+        std::string to_edit = fmt::format("Ping reply: REST [{}ms]", (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() - checktime));
+        msg.edit(to_edit);
+        if (cv_ping_test.wait_for(lk, 20s) == std::cv_status::no_timeout)
+            msg.edit(fmt::format("{} WS [{}ms]", to_edit, ws_checktime));
+        else
+            msg.edit(fmt::format("{} WS [timeout20s]", to_edit));
         return true;
     }
     if (toks[0] == "channellist")
@@ -1324,8 +1335,8 @@ std::cout << "Testing\n";
             { "color", 10599460 }
         };
 
-        if (auto r = _channel.create_message_embed("", t).get(); !r)
-            obj.msg.create_reaction("fail:429554869611921408");
+//         if (auto r = _channel.create_message_embed("", t).get(); !r)
+//             obj.msg.create_reaction("fail:429554869611921408");
         return true;
     }
     if (toks[0] == "peek")
@@ -1368,13 +1379,11 @@ std::cout << "Testing\n";
             obj.msg.create_reaction("fail:429554869611921408");
             return true;
         }
-
-        std::error_code ec;
         
-        if (auto reply = ch->create_message(ec, toks[2].data()).get(); !reply)
-            _channel.create_message(fmt::format("Unable to send message http:{} reason: {}", static_cast<int32_t>(reply.reply_code), reply.content));
-        else
-            obj.msg.create_reaction("success:429554838083207169");
+//         if (auto reply = ch->create_message( toks[2].data()).get(); !reply)
+//             _channel.create_message(fmt::format("Unable to send message http:{} reason: {}", static_cast<int32_t>(reply.reply_code), reply.content));
+//         else
+//             obj.msg.create_reaction("success:429554838083207169");
             
         //obj.msg.create_reaction("<:success:429554838083207169>");
         //obj.msg.create_reaction("<:fail:429554869611921408>");
@@ -1386,28 +1395,26 @@ std::cout << "Testing\n";
         if (check_params(toks, 2, "createguild name"))
             return true;
 
-        if (auto reply = bot.create_guild(std::string{ toks[1] }); reply)
+        bot.create_guild(std::string{ toks[1] }).then([this, sd = sd](aegis::gateway::objects::guild && g)
         {
-            json r = json::parse(reply.content);
-
             json obj;
             obj["max_age"] = 86400;
             obj["max_uses"] = 0;
             obj["temporary"] = false;
             obj["unique"] = true;
-            aegis::rest::request_params && rp = aegis::rest::request_params{ fmt::format("/channels/{}/invites", std::stoull(r["id"].get<std::string>())), aegis::rest::Post, obj.dump() };
-            auto r_create = bot.call(std::move(rp));
-            if (auto r_create = bot.call({ fmt::format("/channels/{}/invites", std::stoull(r["id"].get<std::string>())), aegis::rest::Post, obj.dump() }); r_create)
+            aegis::rest::request_params && rp = aegis::rest::request_params{ fmt::format("/channels/{}/invites", g.guild_id), aegis::rest::Post, obj.dump() };
+            auto r_create = _bot->call(std::move(rp));
+            if (auto r_create = _bot->call({ fmt::format("/channels/{}/invites", g.guild_id), aegis::rest::Post, obj.dump() }); r_create)
             {
-                json i_create = json::parse(reply.content);
-                _channel.create_message(fmt::format("Guild: [{}:{}] Channel: [{}:#{}] https://discord.gg/{}",
+                json i_create = json::parse(r_create.content);
+                sd.channel.create_message(fmt::format("Guild: [{}:{}] Channel: [{}:#{}] https://discord.gg/{}",
                                                     i_create["guild"]["id"].get<std::string>(), i_create["guild"]["name"].get<std::string>(),
                                                     i_create["channel"]["id"].get<std::string>(), i_create["channel"]["name"].get<std::string>(),
                                                     i_create["code"].get<std::string>()));
             }
             else
-                _channel.create_message("Guild made but no invite.");
-        }
+                sd.channel.create_message("Guild made but no invite.");
+        });
         return true;
     }
     if (toks[0] == "rinvite")
@@ -1426,14 +1433,22 @@ std::cout << "Testing\n";
             _channel.create_message("Guild has no channels.");
             return true;
         }
-        if (auto reply = g->get_channels().begin()->second->create_channel_invite(0, 1, false, true).get(); reply)
+        for (auto & _ch : g->get_channels())
         {
-            json r = json::parse(reply.content);
-            _channel.create_message(fmt::format("Guild: [{}:{}] Channel: [{}:#{}] https://discord.gg/{}",
-                            r["guild"]["id"].get<std::string>(), r["guild"]["name"].get<std::string>(),
-                            r["channel"]["id"].get<std::string>(), r["channel"]["name"].get<std::string>(),
-                            r["code"].get<std::string>()));
+            if (_ch.second->get_type() == aegis::gateway::objects::channel::channel_type::Text)
+            {
+                _ch.second->create_channel_invite(0, 1, false, true).then([&](aegis::rest::rest_reply reply)
+                {
+                    json r = json::parse(reply.content);
+                    _channel.create_message(fmt::format("Guild: [{}:{}] Channel: [{}:#{}] https://discord.gg/{}",
+                                                        r["guild"]["id"].get<std::string>(), r["guild"]["name"].get<std::string>(),
+                                                        r["channel"]["id"].get<std::string>(), r["channel"]["name"].get<std::string>(),
+                                                        r["code"].get<std::string>()));
+                });
+                break;
+            }
         }
+
         return true;
     }
     if (toks[0] == "leave")
@@ -1475,7 +1490,7 @@ std::cout << "Testing\n";
         uint32_t num = 0;
         if (toks.size() >= 2)
             num = std::stoul(std::string{ toks[1] });
-        _channel.modify_channel({}, {}, {}, {}, {}, {}, {}, {}, num);
+        _channel.modify_channel(aegis::modify_channel_t().rate_limit_per_user(num));
         obj.msg.create_reaction("success:429554838083207169");
     }
     if (toks[0] == "new")
@@ -1494,55 +1509,28 @@ std::cout << "Testing\n";
     }
     if (toks[0] == "async_wait")
     {
-        auto f = aegis::async([&]()
+        auto f = async([&]()
         {
             std::this_thread::sleep_for(2s);
             do_log(fmt::format("Test log int {}", 1));
             return 1;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
         });
 
-        auto g = aegis::async([&]()
+        auto g = async([&]()
         {
             std::this_thread::sleep_for(2s);
             do_log("Test log void 1");
-        }).then([&]()
-        {
-            do_log("Test log void 2");
-        }).then([&]()
-        {
-            do_log("Test log void 3");
-        }).then([&]()
-        {
-            do_log("Test log void 4");
-        }).then([&]()
-        {
-            do_log("Test log void 5");
-        }).then([&]()
-        {
-            do_log("Test log void 6");
-        }).then([&]()
-        {
-            do_log("Test log void 7");
+        }).then([&]() { do_log("Test log void 2");
+        }).then([&]() { do_log("Test log void 3");
+        }).then([&]() { do_log("Test log void 4");
+        }).then([&]() { do_log("Test log void 5");
+        }).then([&]() { do_log("Test log void 6");
+        }).then([&]() { do_log("Test log void 7");
         });
 
         std::string s = fmt::format("Retrieved before function exit : {}", f.get());
@@ -1551,55 +1539,28 @@ std::cout << "Testing\n";
     }
     if (toks[0] == "async_nowait")
     {
-        auto f = aegis::async([&]()
+        auto f = async([&]()
         {
             std::this_thread::sleep_for(2s);
             do_log(fmt::format("Test log int {}", 1));
             return 1;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
-        }).then([&](auto i)
-        {
-            do_log(fmt::format("Test log int {}", ++i));
-            return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
+        }).then([&](auto i) { do_log(fmt::format("Test log int {}", ++i)); return i;
         });
 
-        auto g = aegis::async([&]()
+        auto g = async([&]()
         {
             std::this_thread::sleep_for(2s);
             do_log("Test log void 1");
-        }).then([&]()
-        {
-            do_log("Test log void 2");
-        }).then([&]()
-        {
-            do_log("Test log void 3");
-        }).then([&]()
-        {
-            do_log("Test log void 4");
-        }).then([&]()
-        {
-            do_log("Test log void 5");
-        }).then([&]()
-        {
-            do_log("Test log void 6");
-        }).then([&]()
-        {
-            do_log("Test log void 7");
+        }).then([&]() { do_log("Test log void 2");
+        }).then([&]() { do_log("Test log void 3");
+        }).then([&]() { do_log("Test log void 4");
+        }).then([&]() { do_log("Test log void 5");
+        }).then([&]() { do_log("Test log void 6");
+        }).then([&]() { do_log("Test log void 7");
         });
     }
 #if !defined(AEGIS_MSVC)
@@ -1645,7 +1606,7 @@ https://discordapp.com/api/users/1
         if (check_params(toks, 2))
             return true;
 
-        auto _guild = obj.bot->find_guild(std::stoll(std::string(toks[1])));
+        auto _guild = bot.find_guild(std::stoll(std::string(toks[1])));
 
         if (_guild == nullptr)
         {
@@ -1704,7 +1665,7 @@ https://discordapp.com/api/users/1
         if (check_params(toks, 2))
             return true;
 
-        auto _guild = obj.bot->find_guild(std::stoll(std::string(toks[1])));
+        auto _guild = bot.find_guild(std::stoll(std::string(toks[1])));
 
         if (_guild == nullptr)
         {
@@ -1714,7 +1675,7 @@ https://discordapp.com/api/users/1
 
         aegis::permission perm = _guild->base_permissions(*_guild->self());
 
-        fmt::MemoryWriter w;
+        std::stringstream w;
 
         w << fmt::format("Perms for [{}] : [{}]\n", _guild->get_name(), _guild->guild_id);
         if (perm.is_admin())
@@ -1744,7 +1705,6 @@ https://discordapp.com/api/users/1
             w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
             w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
             w << fmt::format("canManageEmojis: {}\n", perm.can_manage_emojis());
-            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
             w << fmt::format("canVoiceConnect: {}\n", perm.can_voice_connect());
             w << fmt::format("canVoiceMute: {}\n", perm.can_voice_mute());
             w << fmt::format("canVoiceSpeak: {}\n", perm.can_voice_speak());
@@ -1763,7 +1723,7 @@ https://discordapp.com/api/users/1
         if (check_params(toks, 2))
             return true;
 
-        auto _ch = obj.bot->find_channel(std::stoll(std::string(toks[1])));
+        auto _ch = bot.find_channel(std::stoll(std::string(toks[1])));
 
         if (_ch == nullptr)
         {
@@ -1773,7 +1733,7 @@ https://discordapp.com/api/users/1
 
         aegis::permission perm = _ch->perms();
 
-        fmt::MemoryWriter w;
+        std::stringstream w;
 
         w << fmt::format("Perms for [{}] : [{}]\n", _ch->get_guild().get_name(), _ch->get_guild().guild_id);
         if (perm.is_admin())
@@ -1781,87 +1741,48 @@ https://discordapp.com/api/users/1
         else
         {
             w << "```\n";
-            w << fmt::format("canInvite: {}\n", perm.can_invite());
-            w << fmt::format("canKick: {}\n", perm.can_kick());
-            w << fmt::format("canBan: {}\n", perm.can_ban());
-            w << fmt::format("isAdmin: {}\n", perm.is_admin());
-            w << fmt::format("canManageChannels: {}\n", perm.can_manage_channels());
-            w << fmt::format("canManageGuild: {}\n", perm.can_manage_guild());
-            w << fmt::format("canAddReactions: {}\n", perm.can_add_reactions());
-            w << fmt::format("canViewAuditLogs: {}\n", perm.can_view_audit_logs());
-            w << fmt::format("canReadMessages: {}\n", perm.can_read_messages());
-            w << fmt::format("canSendMessages: {}\n", perm.can_send_messages());
-            w << fmt::format("canTTS: {}\n", perm.can_tts());
-            w << fmt::format("canManageMessages: {}\n", perm.can_manage_messages());
-            w << fmt::format("canEmbed: {}\n", perm.can_embed());
-            w << fmt::format("canAttachFiles: {}\n", perm.can_attach_files());
-            w << fmt::format("canReadHistory: {}\n", perm.can_read_history());
-            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
-            w << fmt::format("canExternalEmoiji: {}\n", perm.can_external_emoiji());
-            w << fmt::format("canChangeName: {}\n", perm.can_change_name());
-            w << fmt::format("canManageNames: {}\n", perm.can_manage_names());
-            w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
-            w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
-            w << fmt::format("canManageEmojis: {}\n", perm.can_manage_emojis());
-            w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
-            w << fmt::format("canVoiceConnect: {}\n", perm.can_voice_connect());
-            w << fmt::format("canVoiceMute: {}\n", perm.can_voice_mute());
-            w << fmt::format("canVoiceSpeak: {}\n", perm.can_voice_speak());
-            w << fmt::format("canVoiceDeafen: {}\n", perm.can_voice_deafen());
-            w << fmt::format("canVoiceMove: {}\n", perm.can_voice_move());
-            w << fmt::format("canVoiceActivity: {}\n", perm.can_voice_activity());
+
+            if (_ch->get_type() == aegis::gateway::objects::channel::Text)
+            {
+                w << fmt::format("canInvite: {}\n", perm.can_invite());
+                w << fmt::format("canManageChannels: {}\n", perm.can_manage_channels());
+                w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
+                w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
+                w << fmt::format("canReadMessages: {}\n", perm.can_read_messages());
+                w << fmt::format("canSendMessages: {}\n", perm.can_send_messages());
+                w << fmt::format("canTTS: {}\n", perm.can_tts());
+                w << fmt::format("canManageMessages: {}\n", perm.can_manage_messages());
+                w << fmt::format("canEmbed: {}\n", perm.can_embed());
+                w << fmt::format("canAttachFiles: {}\n", perm.can_attach_files());
+                w << fmt::format("canReadHistory: {}\n", perm.can_read_history());
+                w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
+                w << fmt::format("canExternalEmoiji: {}\n", perm.can_external_emoiji());
+                w << fmt::format("canAddReactions: {}\n", perm.can_add_reactions());
+                w << fmt::format("canChangeName: {}\n", perm.can_change_name());
+                w << fmt::format("canManageNames: {}\n", perm.can_manage_names());
+                w << fmt::format("canManageEmojis: {}\n", perm.can_manage_emojis());
+                w << fmt::format("canMentionEveryone: {}\n", perm.can_mention_everyone());
+            }
+            else
+            {
+                w << fmt::format("canInvite: {}\n", perm.can_invite());
+                w << fmt::format("canManageChannels: {}\n", perm.can_manage_channels());
+                w << fmt::format("canManageRoles: {}\n", perm.can_manage_roles());
+                w << fmt::format("canManageWebhooks: {}\n", perm.can_manage_webhooks());
+
+                w << fmt::format("canVoiceConnect: {}\n", perm.can_voice_connect());
+                w << fmt::format("canVoiceMute: {}\n", perm.can_voice_mute());
+                w << fmt::format("canVoiceSpeak: {}\n", perm.can_voice_speak());
+                w << fmt::format("canVoiceDeafen: {}\n", perm.can_voice_deafen());
+                w << fmt::format("canVoiceMove: {}\n", perm.can_voice_move());
+                w << fmt::format("canVoiceActivity: {}\n", perm.can_voice_activity());
+                w << fmt::format("hasPrioritySpeaker: {}\n", perm.has_priority_speaker());
+            }
+
             w << "```";
         }
 
         _channel.create_message(w.str());
-        return true;
-    }
-
-    if (toks[0] == "bowsette")
-    {
-        if (!_channel.nsfw())
-        {
-            _channel.create_message("Channel must be set to NSFW for this command.");
-            return true;
-        }
-        aegis::rest::request_params rp;
-        rp.host = "lewd.bowsette.pictures";
-        rp.path = "/api/request";
-        rp.port = "443";
-
-        auto rep = bot.get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
-
-        json j = json::parse(rep.content);
-
-        _channel.create_message(j["url"].get<std::string>());
-        return true;
-    }
-
-    if (toks[0] == "ignore_channel")
-    {
-        auto it = std::find(g_data.ignored_channels.begin(), g_data.ignored_channels.end(), channel_id);
-        if (it == g_data.ignored_channels.end())
-        {
-            g_data.ignored_channels.push_back(channel_id);
-            create_message(_channel, "Channel ignore set to: true", true);
-            sadd("ignored_channels", { std::to_string(channel_id) }, g_data);
-            return true;
-        }
-
-        g_data.ignored_channels.erase(it);
-        create_message(_channel, "Channel ignore set to: false", true);
-        srem("ignored_channels", { std::to_string(channel_id) }, g_data);
-        return true;
-    }
-
-    if (toks[0] == "channel_status")
-    {
-        bool res = false;
-        auto it = std::find(g_data.ignored_channels.begin(), g_data.ignored_channels.end(), channel_id);
-        if (it != g_data.ignored_channels.end())
-            res = true;
-
-        create_message(_channel, fmt::format("Channel ignore currently set to: {}", res), true);
         return true;
     }
 
@@ -1878,7 +1799,18 @@ https://discordapp.com/api/users/1
     {
         if (toks.size() > 1)
         {
-            create_message(_channel, toks[1].data());
+            auto fut = create_message(_channel, toks[1].data()).then([&](message && msg)
+            {
+                return msg.edit("Edited");
+            }).handle_exception([&](std::exception_ptr e)
+            {
+                try { std::rethrow_exception(e); }
+                catch (std::exception & e) { bot.log->error("err: {}", e.what()); }
+                return message();
+            });
+
+            auto result = fut.get();
+            //bot.log->info("Result of echo: {}", result.success()?"Success":"Failure");
         }
         return true;
     }
@@ -1904,6 +1836,354 @@ https://discordapp.com/api/users/1
         create_message(_channel, fmt::format("Analysis: type({}) value({})", strtype, id));
         return true;
     }
+
+    if (toks[0] == "~test")
+    {
+        aegis::create_message_embed_t _to_send;
+        _to_send.content("content");
+        using aegis::gateway::objects::embed;
+        using aegis::gateway::objects::field;
+        using aegis::gateway::objects::message;
+        _to_send.embed(
+            embed()
+            .description("desc")
+            .title("title")
+            .fields(
+                {
+                    field().name("name1").value("inline true").is_inline(true),
+                    field().name("name2").value("inline false").is_inline(false),
+                    field().name("name3").value("inline true").is_inline(true),
+                    field().name("name4").value("inline true").is_inline(true)
+                }
+            )
+            .color(rand() % 0xFFFFFF)
+            .url("https://www.google.com")
+        );
+        using aegis::gateway::objects::message;
+        using aegis::rest::rest_reply;
+        _channel.create_message_embed(_to_send)
+            .then([](message result_msg) mutable {
+            return result_msg.create_reaction("success:429554838083207169")
+                .then([result_msg = std::move(result_msg)](rest_reply reply) mutable {
+
+                if (!reply)
+                    return aegis::make_ready_future<rest_reply>();
+
+                return result_msg.edit("Edited").then([result_msg = std::move(result_msg)](auto) mutable {
+                    return result_msg.create_reaction("aegis:288902947046424576");
+                });
+            });
+        });
+        return true;
+    }
+
+    if (toks[0] == "count")
+    {
+        for (int i = 0; i < std::stoi(std::string{ toks[1] }); ++i)
+        {
+            _channel.create_message(std::to_string(i));
+        }
+    }
+
+    if (toks[0] == "emoji")
+    {
+        if (toks.size() < 2)
+            return true;
+        static const std::array<std::string, 10> emojis = { "aegis:288902947046424576", "success:429554838083207169", "l_n:388391489983610880", "l_i:388391527346601985", "l_c:388391577661341707", "l_e:388390972096249867",
+        "l_m:388390914659450882", "I_e:388391023052587018", "I_m:388390995466780703", "_e:388391054887354368"};
+        for (int i = 0; i < std::stoi(std::string{ toks[1] }); ++i)
+        {
+            sd.msg.msg.create_reaction(emojis[i]).get();
+        }
+    }
+
+    if (toks[0] == "fdc")
+    {
+        bot.send_all_shards(std::string(R"({ "op": 20 })"));
+        return true;
+    }
+
+    if (toks[0] == "thread")
+    {
+        if (toks.size() < 2)
+            return true;
+
+        if (toks[1] == "count")
+        {
+            int i = 0;
+            for (auto & t : bot.threads)
+                if (t->active)
+                    ++i;
+            create_message(_channel, fmt::format("Scheduler thread count: `{}`", i));
+            return true;
+        }
+        else if (toks[1] == "reduce")
+        {
+            if (toks.size() == 3)
+                bot.reduce_threads(std::stoi(std::string{ toks[2] }));
+            return true;
+        }
+        else if (toks[1] == "spawn")
+        {
+            if (toks.size() == 3)
+            {
+                std::size_t old_size = bot.threads.size();
+                for (int i = 0; i < std::stoi(std::string{ toks[2] }); ++i)
+                    bot.add_run_thread();
+                create_message(_channel, fmt::format("Scheduler thread count increased from `{}` to `{}`", old_size, bot.threads.size()));
+                return true;
+            }
+            create_message(_channel, fmt::format("Scheduler thread count: `{}`", bot.add_run_thread()));
+            return true;
+        }
+    }
+
+    if (toks[0] == "events")
+    {
+        uint64_t eventsseen = 0;
+        std::stringstream ss;
+
+        for (auto & evt : bot.message_count)
+        {
+            ss << "[" << evt.first << "]:" << evt.second << ' ';
+            eventsseen += evt.second;
+        }
+
+        json msg =
+        {
+            { "title", fmt::format("Messages received: {}", [&]() -> int64_t { int64_t c = 0; for (auto & s : bot.get_shard_mgr().get_shards()) { c += s->get_sequence(); } return c; }()) },
+            { "description", ss.str() },
+            { "color", rand() % 0xFFFFFF }
+        };
+
+        _channel.create_message_embed({}, msg);
+        return true;
+    }
+
+    if (toks[0] == "clear")
+    {
+        int count = 10;
+        bool bot_clear = false;
+        snowflake target_id;
+        if (toks.size() > 2)
+        {
+            if (toks[1] == "self")
+                target_id = bot.get_id();
+            else if (toks[1] == "bot")
+                bot_clear = true;
+            else
+                target_id = get_snowflake(toks[1], _guild);
+            count = std::stoi(std::string{ toks[2] });
+        }
+        else if (toks.size() > 1)
+            count = std::stoi(std::string{ toks[1] });
+
+        std::vector<aegis::snowflake> messages;
+        {
+            std::unique_lock<std::shared_mutex> l(m_message);
+            for (auto it = message_history.rbegin(); it != message_history.rend(); ++it)
+            {
+                if (it->second.get_channel_id() == _channel.get_id())
+                {
+                    if (it->second.get_id() == message_id)
+                        continue;
+                    if (bot_clear == true)
+                    {
+                        if (it->second.author.is_bot())
+                            if (count-- > 0)
+                                messages.push_back(it->second.get_id());
+                    }
+                    else if (target_id == 0 || it->second.author.id == target_id)
+                        if (count-- > 0)
+                            messages.push_back(it->second.get_id());
+                }
+                if (count == 0)
+                    break;
+            }
+        }
+        if (!_channel.perms().can_manage_messages())
+        {
+            req_permission(obj.msg);
+            return true;
+        }
+        if (messages.size() > 2 && messages.size() < 100)
+            _channel.bulk_delete_message(messages);
+        else
+            //manually delete each
+            for (const auto & it : messages)
+                _channel.delete_message(it);
+
+        _channel.create_message(fmt::format("{} messages cleared.", messages.size()))
+            .then([obj](message reply) mutable
+        {
+            std::this_thread::sleep_for(5s);
+            obj.msg.delete_message();
+            reply.delete_message();
+        });
+        return true;
+    }
+
+    if (toks[0] == "testfunc")
+    {
+        _channel.create_message(fmt::format("By ID: <@{}>", member_id));
+        auto mbr = bot.find_user(member_id);
+        if (mbr)
+        {
+            _channel.create_message(fmt::format("By Find: {} | {}", mbr->get_full_name(), mbr->get_guild_info(guild_id).nickname.value_or("")));
+        }
+        return true;
+    }
+
+    if (toks[0] == "intended")
+    {
+        _channel.create_message("@everyone test");
+        obj.msg.delete_message();
+        return true;
+    }
+
+    if (toks[0] == "b64")
+    {
+        if (toks.size() < 3)
+            return false;
+
+        if (toks[1] == "d" || toks[1] == "decode")
+        {
+            auto t = base64_decode(toks[2].data());
+            _channel.create_message(fmt::format("```\n{}\n```", t));
+        }
+        else if (toks[1] == "e" || toks[1] == "encode")
+        {
+            auto t = base64_encode(toks[2].data());
+            if (t.size() > 1900)
+                t = "Encoded text too large.";
+            _channel.create_message(fmt::format("```\n{}\n```", t));
+        }
+        return true;
+    }
+
+	if (toks[0] == "e64")
+	{
+		if (toks.size() < 2)
+			return false;
+
+		auto t = base64_encode(toks[1].data());
+		if (t.size() > 1900)
+			t = "Encoded text too large.";
+		_channel.create_message(fmt::format("```\n{}\n```", t));
+        return true;
+    }
+
+	if (toks[0] == "d64")
+	{
+		if (toks.size() < 2)
+			return false;
+
+		auto t = base64_decode(toks[1].data());
+
+// 		std::ostringstream escaped;
+// 		escaped.fill('0');
+// 		escaped << std::hex;
+// 
+// 		for (std::string::value_type c : t)
+// 		{
+// 			// Keep alphanumeric and other accepted characters intact
+// 			//if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~' || c == '/' || c == '\\')
+//             if (c >= '!' && c <= 255)
+// 			{
+// 				escaped << c;
+// 				continue;
+// 			}
+// 
+// 			// Any other characters are percent-encoded
+// 			escaped << std::uppercase;
+// 			escaped << "\\u000" << std::setw(1) << int((unsigned char)c);
+// 			escaped << std::nouppercase;
+// 		}
+// 
+// 		t = escaped.str();
+
+
+// 		std::string tt;
+// 		for (auto& c : t)
+// 		{
+// 			if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '1' && c <= '0'))
+// 				tt.append(c);
+// 			else
+// 				tt.append({ '\\', 'u', '0', '0', '0', utility::hex(c) });
+// 		}
+		if (t.size() > 1900)
+			t = "Decoded text too large.";
+		_channel.create_message(fmt::format("```\n{}\n```", t));
+        return true;
+    }
+
+//     if (toks[0] == "glac")
+//     {
+//         aegis::rest::request_params rp;
+//         rp.host = "glaca.nostale.club";
+//         rp.method = aegis::rest::Get;
+//         rp.path = "/api/pl/1";
+// 
+//         rest_reply ret = _bot->get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+//         json response = json::parse(ret.content);
+// 
+//         _channel.create_message(fmt::format("Angels: {} VS Demons: {}", response["angels"]["progress"].get<std::string>(), response["demons"]["progress"].get<std::string>()));
+//     }
+
+/*
+	//
+	if (toks[0] == "startplugincheck")
+	{
+		aegis::rest::request_params rp;
+		rp.host = "umod.org";
+		rp.method = aegis::rest::Get;
+		rp.path = "/plugins/search.json?query=&page=1&sort=published_at&sortdir=desc&filter=";
+		rest_reply ret = _bot->get_rest_controller().execute2(std::forward<aegis::rest::request_params>(rp));
+		json response = json::parse(ret.content);
+
+		for (const auto& j : response["data"])
+		{
+			std::cout << fmt::format("name: {} - url: {}", j["name"].get<std::string>(), j["url"].get<std::string>());
+			using field = aegis::gateway::objects::field;
+			using embed = aegis::gateway::objects::embed;
+			using thumbnail = aegis::gateway::objects::thumbnail;
+			using footer = aegis::gateway::objects::footer;
+			std::string iconurl = j["icon_url"];
+			if (iconurl.empty()) iconurl = j["author_icon_url"];
+			_channel.create_message_embed({}, embed().color(rand())
+				.title("**Plugin Added/Updated!**")
+				.fields({
+							field("Plugin:", fmt::format("**[{}]({})**", j["name"].get<std::string>(), j["url"].get<std::string>())).is_inline(true),
+							field("Version:", fmt::format("**{}**", j["latest_release_version"].get<std::string>())).is_inline(true),
+							field("Description:", fmt::format("```\n{}\n```", j["description"].get<std::string>())).is_inline(false)
+					})
+				.timestamp(j["latest_release_at_atom"])
+				//.image("")
+				.thumbnail({ j["icon_url"].get<std::string>() })
+				.footer({ "CodeXive.org" })
+			);
+			//return true;
+		}
+		return true;
+	}*/
+
+	if (toks[0] == "cset")
+	{
+		if (toks.size() < 3)
+			return true;
+
+		cdata_set(std::string(toks[1]), std::string(toks[2]));
+		return true;
+	}
+
+	if (toks[0] == "cget")
+	{
+		if (toks.size() < 2)
+			return true;
+
+		cdata_get(std::string(toks[1]));
+		return true;
+	}
 
     return false;
 }
